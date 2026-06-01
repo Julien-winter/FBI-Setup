@@ -1,9 +1,4 @@
 * text=auto
 
-*.cpp linguist-language=C++
-*.h linguist-language=C++
-*.rc linguist-language=C++
-
-.gitignore linguist-documentation
-.gitattributes linguist-documentation
-README.md linguist-documentation
+.gitignore linguist-generated
+.gitattributes linguist-generated
