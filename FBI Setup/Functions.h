@@ -33,11 +33,9 @@ enum class ErrorCode {
 
 struct CLIConfig {
     bool headless = false;
-    bool logToFile = false;
     bool quiet = false;
     std::vector<int> skipChecks;
     std::vector<int> onlyChecks;
-    std::string configPath;
     std::string exportPath;
     bool showHelp = false;
 };
@@ -66,6 +64,7 @@ namespace Helper {
     extern std::mutex logMutex;
     extern std::ofstream logFile;
     extern bool logEnabled;
+    extern std::string g_logPath;
     extern CLIConfig cliConfig;
     extern std::vector<CheckResult> g_results;
     extern std::mutex g_resultsMutex;
