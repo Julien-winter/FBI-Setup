@@ -109,10 +109,6 @@ int main(int argc, char* argv[])
 
     Color::setForegroundColor(Color::LightGray);
     std::cout << "-----------------------------------------------------------------\n";
-    Color::setForegroundColor(Color::Cyan);
-    std::cout << "Running system checks\n";
-    Color::setForegroundColor(Color::LightGray);
-    std::cout << "-----------------------------------------------------------------\n";
 
     if (!Helper::isCheckSkipped(20)) Checks::checkInternet();
     else { Helper::printConcern("- Skipped: Internet"); Helper::recordResult("Internet", "SKIPPED", ""); }

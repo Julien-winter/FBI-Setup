@@ -227,7 +227,7 @@ void Checks::checkForUpdate() {
     if (tag != "v" + Helper::g_appVersion && tag != Helper::g_appVersion) {
         Helper::printConcern("- New version available: " + tag + " (current: v" + Helper::g_appVersion + ")");
         Helper::recordResult("Auto-Update", "WARN", "New version: " + tag);
-    } else { Helper::printSuccess("- You are on the latest version (v" + Helper::g_appVersion + ")", false); Helper::recordResult("Auto-Update", "OK", "Up to date"); }
+    } else { Helper::recordResult("Auto-Update", "OK", "Up to date"); }
 }
 
 void Checks::checkWindowsDefender()
@@ -324,47 +324,48 @@ void Checks::check3rdPartyAntiVirus()
 {
     SetConsoleTitleA("Checking for 3rd Party Anti-Viruses");
 
-    std::string command = "WMIC /Node:localhost /Namespace:\\\\root\\SecurityCenter2 Path AntiVirusProduct Get displayName /Format:List";
-    std::string antivirusList;
-    std::FILE* pipe = _popen(command.c_str(), "r");
-    if (!pipe) {
-        DWORD err = GetLastError();
-        Helper::printError("- Failed to check for 3rd party Anti-Viruses (Error 4, GLE=" + std::to_string(err) + ")");
-        Helper::recordResult("3rd Party AV", "FAIL", "WMIC failed");
+    auto runWMIC = [](const std::string& cmd) -> std::string {
+        std::FILE* pipe = _popen(cmd.c_str(), "r");
+        if (!pipe) {
+            Helper::runSystemCommand("dism /online /enable-feature /featurename:WMIC /quiet /norestart 2>nul");
+            Sleep(500);
+            pipe = _popen(cmd.c_str(), "r");
+        }
+        if (!pipe) return "ERROR";
+        char buffer[256]; std::string result;
+        while (std::fgets(buffer, 256, pipe)) result += buffer;
+        _pclose(pipe);
+        return result;
+    };
+
+    std::string wmiOutput = runWMIC("WMIC /Node:localhost /Namespace:\\\\root\\SecurityCenter2 Path AntiVirusProduct Get displayName /Format:List");
+    if (wmiOutput == "ERROR") {
+        Helper::printConcern("- WMIC not available - possible modified OS");
+        Helper::recordResult("3rd Party AV", "WARN", "WMIC not available");
         return;
     }
 
-    char buffer[128]; std::string wmicOutput;
-    while (std::fgets(buffer, 128, pipe) != NULL) wmicOutput += buffer;
-    _pclose(pipe);
-
-    std::vector<std::string> detectedAVs;
-    std::size_t pos;
-    while ((pos = wmicOutput.find("\n")) != std::string::npos) {
-        std::string av = wmicOutput.substr(0, pos);
+    std::string antivirusList;
+    while (wmiOutput.find("\n") != std::string::npos) {
+        std::string av = wmiOutput.substr(0, wmiOutput.find("\n"));
         if (av.find("Windows Defender") == std::string::npos && av.size() > 12) {
             av = av.substr(12);
             av.erase(std::remove(av.begin(), av.end(), '\n'), av.end());
             av.erase(std::remove(av.begin(), av.end(), '\r'), av.end());
             av.erase(std::remove(av.begin(), av.end(), '\b'), av.end());
-            detectedAVs.push_back(av);
+            if (!av.empty()) {
+                if (!antivirusList.empty()) antivirusList += ", ";
+                antivirusList += av;
+            }
         }
-        if (pos + 1 < wmicOutput.size()) wmicOutput = wmicOutput.substr(pos + 1);
+        size_t pos = wmiOutput.find("\n");
+        if (pos + 1 < wmiOutput.size()) wmiOutput = wmiOutput.substr(pos + 1);
         else break;
     }
 
-    if (detectedAVs.empty()) {
-        Helper::printSuccess("- No 3rd party Anti-Virus was detected", false);
-        Helper::recordResult("3rd Party AV", "OK", "None detected");
-        return;
-    }
-
-    std::string avList;
-    for (auto& av : detectedAVs) { if (!avList.empty()) avList += ", "; avList += av; }
-
-    bool anyRemoved = false;
-    for (auto& av : detectedAVs) {
-        // Try to find uninstall string in registry
+    if (!antivirusList.empty()) {
+        // Try to auto-uninstall
+        bool anyRemoved = false;
         HKEY hKey;
         if (RegOpenKeyEx(HKEY_LOCAL_MACHINE, "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall",
             0, KEY_READ, &hKey) == ERROR_SUCCESS) {
@@ -372,17 +373,23 @@ void Checks::check3rdPartyAntiVirus()
             while (RegEnumKeyEx(hKey, idx, subkeyName, &subkeyNameSize, NULL, NULL, NULL, NULL) == ERROR_SUCCESS) {
                 HKEY hSubkey;
                 if (RegOpenKeyEx(hKey, subkeyName, 0, KEY_READ, &hSubkey) == ERROR_SUCCESS) {
-                    char dn[256]; DWORD dnSize = sizeof(dn);
-                    if (RegQueryValueEx(hSubkey, "DisplayName", NULL, NULL, (LPBYTE)dn, &dnSize) == ERROR_SUCCESS) {
-                        std::string displayName(dn);
-                        if (displayName.find(av) != std::string::npos || av.find(displayName) != std::string::npos) {
-                            char uninstall[512]; DWORD usSize = sizeof(uninstall);
-                            if (RegQueryValueEx(hSubkey, "UninstallString", NULL, NULL, (LPBYTE)uninstall, &usSize) == ERROR_SUCCESS) {
-                                std::string uninstallCmd(uninstall);
-                                uninstallCmd += " /S /quiet /norestart";
-                                Helper::runSystemCommand(uninstallCmd.c_str());
-                                Sleep(1000);
-                                anyRemoved = true;
+                    char dn[256] = ""; DWORD dnSize = sizeof(dn);
+                    RegQueryValueEx(hSubkey, "DisplayName", NULL, NULL, (LPBYTE)dn, &dnSize);
+                    std::string displayName(dn);
+                    for (auto& av : {antivirusList}) {
+                        size_t comma = 0;
+                        while (comma != std::string::npos) {
+                            std::string single = av.substr(comma == 0 ? 0 : comma + 2);
+                            comma = av.find(",", comma == 0 ? 0 : comma + 2);
+                            if (displayName.find(single) != std::string::npos) {
+                                char uninstall[512] = ""; DWORD usSize = sizeof(uninstall);
+                                if (RegQueryValueEx(hSubkey, "UninstallString", NULL, NULL, (LPBYTE)uninstall, &usSize) == ERROR_SUCCESS) {
+                                    std::string cmd(uninstall);
+                                    cmd += " /S /quiet /norestart";
+                                    Helper::runSystemCommand(cmd.c_str());
+                                    anyRemoved = true;
+                                }
+                                break;
                             }
                         }
                     }
@@ -392,25 +399,52 @@ void Checks::check3rdPartyAntiVirus()
             }
             RegCloseKey(hKey);
         }
+
+        if (anyRemoved) {
+            Helper::printSuccess("- Attempted to remove 3rd party AV (" + antivirusList + ")", true);
+            Helper::recordResult("3rd Party AV", "OK", "Uninstall attempted: " + antivirusList);
+        } else {
+            Helper::printError("- 3rd party Anti-Virus detected: " + antivirusList);
+            Helper::recordResult("3rd Party AV", "FAIL", "Found: " + antivirusList);
+        }
+        return;
     }
 
-    if (anyRemoved) {
-        Helper::printSuccess("- Attempted to remove 3rd party AV (" + avList + ")", true);
-        Helper::recordResult("3rd Party AV", "OK", "Uninstall attempted: " + avList);
-    }
-    else {
-        Helper::printError("- 3rd party Anti-Virus detected, please uninstall manually (" + avList + ")");
-        Helper::recordResult("3rd Party AV", "FAIL", "Found: " + avList);
-    }
+    Helper::recordResult("3rd Party AV", "OK", "None detected");
 }
 
-void Checks::checkCPUV() {
+void Checks::checkCPUV()
+{
     SetConsoleTitleA("Checking CPUV-V");
-    std::string result = Helper::runSystemCommandWithOutput("WMIC CPU Get VirtualizationFirmwareEnabled", 10000);
-    if (result == "TIMEOUT") { Helper::printError("- Timed out checking CPU-V (Error 5)"); Helper::recordResult("CPU-V", "FAIL", "Timeout"); return; }
-    if (result.empty()) { Helper::printError("- Failed to check CPU-V (Error 5)"); Helper::recordResult("CPU-V", "FAIL", "WMIC failed"); return; }
-    if (result.find("True") != std::string::npos) { Helper::printError("- CPU-V is enabled in BIOS"); Helper::recordResult("CPU-V", "FAIL", "Enabled"); }
-    else { Helper::printSuccess("- CPU-V is disabled", false); Helper::recordResult("CPU-V", "OK", "Disabled"); }
+
+    auto runWMIC = [](const std::string& cmd) -> std::string {
+        std::FILE* pipe = _popen(cmd.c_str(), "r");
+        if (!pipe) {
+            Helper::runSystemCommand("dism /online /enable-feature /featurename:WMIC /quiet /norestart 2>nul");
+            Sleep(500);
+            pipe = _popen(cmd.c_str(), "r");
+        }
+        if (!pipe) return "ERROR";
+        char buffer[256]; std::string result;
+        while (std::fgets(buffer, 256, pipe)) result += buffer;
+        _pclose(pipe);
+        return result;
+    };
+
+    std::string result = runWMIC("WMIC CPU Get VirtualizationFirmwareEnabled");
+    if (result == "ERROR") {
+        Helper::printConcern("- WMIC not available - possible modified OS");
+        Helper::recordResult("CPU-V", "WARN", "WMIC not available");
+        return;
+    }
+
+    if (result.find("True") != std::string::npos) {
+        Helper::printError("- CPU-V is enabled in BIOS, please disable in BIOS");
+        Helper::recordResult("CPU-V", "FAIL", "Enabled in BIOS");
+        return;
+    }
+
+    Helper::recordResult("CPU-V", "OK", "Disabled");
 }
 
 void Checks::uninstallRiotVanguard() {
