@@ -28,7 +28,9 @@ enum class ErrorCode {
     E20_Chrome_RegWrite = 20, E21_Chrome_RegCreate = 21, E22_Winver_Read = 22,
     E23_Winver_Unknown = 23, E24_Symbols_Delete = 24, E25_Exploit_Write = 25,
     E26_Exploit_Open = 26, E27_SmartScreen_Write = 27, E28_SmartScreen_Open = 28,
-    E29_Gamebar_Write = 29, E30_Gamebar_Open = 30, E31_FastBoot_Write = 31, E32_FastBoot_Open = 32,
+    E29_Gamebar_Write = 29, E30_Gamebar_Open = 30, E31_FastBoot_Write = 31,     E32_FastBoot_Open = 32,
+    E33_Defender_Tamper = 33,
+    E34_AV_Tamper = 34,
 };
 
 struct CLIConfig {
@@ -47,6 +49,8 @@ struct CheckResult {
 };
 
 namespace Checks {
+    bool checkDefenderTamperProtection();
+    bool checkAVTamperProtection(const std::string& avName);
     void checkWindowsDefender(); void check3rdPartyAntiVirus(); void checkCPUV();
     void uninstallRiotVanguard(); void installVCRedist(); void checkSecureBoot();
     void isChromeInstalled(); void syncWindowsTime(); void disableChromeProtection();

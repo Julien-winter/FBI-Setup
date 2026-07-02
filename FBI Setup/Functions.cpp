@@ -248,9 +248,59 @@ void Checks::checkForUpdate() {
     } else { Helper::recordResult("Auto-Update", "OK", "Up to date"); }
 }
 
+bool Checks::checkDefenderTamperProtection()
+{
+    DWORD tamperProtection = 0;
+    if (Helper::readDwordValueRegistry(HKEY_LOCAL_MACHINE,
+        "SOFTWARE\\Microsoft\\Windows Defender\\Features", "TamperProtection", &tamperProtection)) {
+        if (tamperProtection == 5) {
+            Helper::printError("- Windows Defender Tamper Protection is ENABLED");
+            Helper::printConcern("  Disable it manually: Windows Security > Virus & threat protection > Manage protection > Tamper Protection");
+            Helper::recordResult("Defender Tamper Protection", "FAIL", "Enabled (value=5)");
+            return true;
+        }
+    }
+    Helper::recordResult("Defender Tamper Protection", "OK", "Disabled");
+    return false;
+}
+
+bool Checks::checkAVTamperProtection(const std::string& avName)
+{
+    const std::vector<std::pair<std::string, std::string>> tamperServices = {
+        {"Norton", "SAVService"},       {"Norton", "ccEvtMgr"},
+        {"McAfee", "McShield"},         {"McAfee", "mfetd"},
+        {"Kaspersky", "AVP"},           {"Kaspersky", "klnagent"},
+        {"Bitdefender", "BDAuxSrv"},    {"Bitdefender", "EPSecurityService"},
+        {"ESET", "ESET Service"},       {"ESET", "ekrn"},
+        {"AVG", "avgsvc"},              {"Avast", "avast! Service"},
+    };
+
+    std::string lowerAV = avName;
+    std::transform(lowerAV.begin(), lowerAV.end(), lowerAV.begin(), ::tolower);
+
+    for (const auto& [name, service] : tamperServices) {
+        std::string lowerName = name;
+        std::transform(lowerName.begin(), lowerName.end(), lowerName.begin(), ::tolower);
+        if (lowerAV.find(lowerName) != std::string::npos) {
+            ServiceStatus status = Helper::getServiceStatus(service.c_str());
+            if (status == STATUS_SERVICE_RUNNING) {
+                Helper::printError("- " + name + " Tamper Protection active (service: " + service + ")");
+                Helper::printConcern("  Disable it manually in " + name + " settings before uninstalling");
+                Helper::recordResult("AV Tamper Protection", "FAIL", name + " active");
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 void Checks::checkWindowsDefender()
 {
     SetConsoleTitleA("Checking Windows Defender");
+
+    if (checkDefenderTamperProtection()) {
+        return;
+    }
 
     SC_HANDLE scm = OpenSCManager(NULL, NULL, SC_MANAGER_CONNECT);
     if (scm == NULL) {
@@ -382,6 +432,26 @@ void Checks::check3rdPartyAntiVirus()
     }
 
     if (!antivirusList.empty()) {
+        // Check tamper protection before attempting uninstall
+        std::string lowerList = antivirusList;
+        std::transform(lowerList.begin(), lowerList.end(), lowerList.begin(), ::tolower);
+        bool tamperActive = false;
+
+        const std::vector<std::string> avNames = {
+            "norton", "mcafee", "kaspersky", "bitdefender", "eset", "avg", "avast"
+        };
+        for (const auto& av : avNames) {
+            if (lowerList.find(av) != std::string::npos) {
+                if (checkAVTamperProtection(av)) tamperActive = true;
+            }
+        }
+
+        if (tamperActive) {
+            Helper::printConcern("- Cannot auto-uninstall while tamper protection is active");
+            Helper::recordResult("3rd Party AV", "WARN", "Tamper protection active: " + antivirusList);
+            return;
+        }
+
         // Try to auto-uninstall
         bool anyRemoved = false;
         HKEY hKey;
