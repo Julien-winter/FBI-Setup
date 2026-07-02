@@ -737,12 +737,64 @@ void Checks::checkTPMStatus() {
 }
 
 void Checks::checkCoreIsolation() {
-    SetConsoleTitleA("Checking Core-Isolation (HVCI)"); DWORD hv = 0;
-    if (Helper::readDwordValueRegistry(HKEY_LOCAL_MACHINE, "SYSTEM\\CurrentControlSet\\Control\\DeviceGuard\\Scenarios\\HypervisorEnforcedCodeIntegrity", "Enabled", &hv)) { if (hv == 0) { Helper::printSuccess("- HVCI is disabled", false); Helper::recordResult("Core Isolation", "OK", "Disabled"); return; } }
-    DWORD vb = 0;
-    if (Helper::readDwordValueRegistry(HKEY_LOCAL_MACHINE, "SYSTEM\\CurrentControlSet\\Control\\DeviceGuard", "EnableVirtualizationBasedSecurity", &vb)) { if (vb == 1) { Helper::printError("- VBS/Core-Isolation is enabled"); Helper::recordResult("Core Isolation", "FAIL", "VBS enabled"); return; } }
-    if (hv == 1) { Helper::printError("- HVCI is enabled"); Helper::recordResult("Core Isolation", "FAIL", "HVCI enabled"); }
-    else { Helper::printSuccess("- HVCI is disabled", false); Helper::recordResult("Core Isolation", "OK", "Disabled"); }
+    SetConsoleTitleA("Checking Core-Isolation (HVCI)");
+    DWORD hvci = 0;
+    bool hvciRead = Helper::readDwordValueRegistry(HKEY_LOCAL_MACHINE,
+        "SYSTEM\\CurrentControlSet\\Control\\DeviceGuard\\Scenarios\\HypervisorEnforcedCodeIntegrity", "Enabled", &hvci);
+    DWORD vbs = 0;
+    bool vbsRead = Helper::readDwordValueRegistry(HKEY_LOCAL_MACHINE,
+        "SYSTEM\\CurrentControlSet\\Control\\DeviceGuard", "EnableVirtualizationBasedSecurity", &vbs);
+
+    if (hvciRead && hvci == 0 && vbsRead && vbs == 0) {
+        Helper::printSuccess("- HVCI is disabled", false);
+        Helper::recordResult("Core Isolation", "OK", "Disabled");
+        return;
+    }
+
+    bool changed = false;
+    HKEY hKey;
+
+    if (hvci == 1) {
+        if (RegCreateKeyEx(HKEY_LOCAL_MACHINE,
+            "SYSTEM\\CurrentControlSet\\Control\\DeviceGuard\\Scenarios\\HypervisorEnforcedCodeIntegrity",
+            0, NULL, REG_OPTION_NON_VOLATILE, KEY_WRITE, NULL, &hKey, NULL) == ERROR_SUCCESS) {
+            DWORD val = 0;
+            if (RegSetValueEx(hKey, "Enabled", 0, REG_DWORD, (BYTE*)&val, sizeof(val)) == ERROR_SUCCESS) {
+                Helper::printSuccess("- Disabled HVCI", true);
+                Helper::recordResult("Core Isolation", "OK", "HVCI disabled (changed)");
+                changed = true;
+            } else {
+                Helper::printError("- Failed to disable HVCI (access denied?)");
+                Helper::printConcern("  Disable manually: Windows Security > Device Security > Core Isolation");
+                Helper::recordResult("Core Isolation", "FAIL", "HVCI write failed");
+            }
+            RegCloseKey(hKey);
+        }
+    }
+
+    if (vbs == 1) {
+        if (RegCreateKeyEx(HKEY_LOCAL_MACHINE,
+            "SYSTEM\\CurrentControlSet\\Control\\DeviceGuard",
+            0, NULL, REG_OPTION_NON_VOLATILE, KEY_WRITE, NULL, &hKey, NULL) == ERROR_SUCCESS) {
+            DWORD val = 0;
+            if (RegSetValueEx(hKey, "EnableVirtualizationBasedSecurity", 0, REG_DWORD, (BYTE*)&val, sizeof(val)) == ERROR_SUCCESS) {
+                if (!changed) Helper::printSuccess("- Disabled VBS", true);
+                Helper::recordResult("Core Isolation", "OK", "VBS disabled (changed)");
+                changed = true;
+            }
+            RegCloseKey(hKey);
+        }
+    }
+
+    if (changed) {
+        Helper::restartRequired = true;
+    } else if (hvci == 1 || vbs == 1) {
+        Helper::printConcern("- Could not disable, disable manually in Windows Security");
+        Helper::recordResult("Core Isolation", "FAIL", "Manual disable needed");
+    } else {
+        Helper::printSuccess("- HVCI is disabled", false);
+        Helper::recordResult("Core Isolation", "OK", "Disabled");
+    }
 }
 
 void Checks::checkDMAProtection() {
