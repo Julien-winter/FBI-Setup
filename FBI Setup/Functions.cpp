@@ -4,6 +4,8 @@ namespace Helper {
     bool restartRequired = false;
     std::atomic<bool> vcComplete{false};
     int vcCheckSleepTimes = 0;
+    int g_phase = 1;
+    std::vector<std::string> pendingChanges;
     bool titleLoopBool = true;
     std::mutex consoleMutex;
     std::mutex logMutex;
@@ -15,7 +17,7 @@ namespace Helper {
     std::mutex g_resultsMutex;
     std::string g_repoUrl = "Julien-winter/FBI-Setup";
     std::string g_appName = "FBI-Setup";
-    std::string g_appVersion = "1.1.1";
+    std::string g_appVersion = "1.1.2";
 }
 void Helper::recordResult(const std::string& check, const std::string& status, const std::string& message)
 {
@@ -117,7 +119,7 @@ void Helper::showHelp() {
     std::cout << "  6=VCRedist 7=Chrome 8=ChromeProtection 9=TimeSync 10=Winver\n";
     std::cout << "  11=Symbols 12=FastBoot 13=ExploitProtection 14=SmartScreen\n";
     std::cout << "  15=GameBar 16=TPM 17=CoreIsolation 18=DMAProtection 19=ModifiedOS\n";
-    std::cout << "  20=Internet 21=VM-Detect 22=Auto-Update\n";
+    std::cout << "  20=Internet 21=VM-Detect 22=Auto-Update 23=NetworkAdapters 24=SecurityMitigations\n";
 }
 
 CLIConfig Helper::parseCLI(int argc, char* argv[]) {
@@ -248,6 +250,223 @@ void Checks::checkForUpdate() {
     } else { Helper::recordResult("Auto-Update", "OK", "Up to date"); }
 }
 
+void Checks::checkNetworkAdapters()
+{
+    SetConsoleTitleA("Checking Network Adapters");
+
+    std::string output = Helper::runSystemCommandWithOutput(
+        "netsh interface show interface", 10000);
+
+    if (output.empty() || output.find("ERROR") != std::string::npos) {
+        Helper::printConcern("- Could not retrieve network adapter info");
+        Helper::recordResult("Network Adapters", "WARN", "Query failed");
+        return;
+    }
+
+    std::istringstream stream(output);
+    std::string line;
+    std::vector<std::string> adapters;
+    int usedCount = 0;
+    int totalCount = 0;
+
+    while (std::getline(stream, line)) {
+        if (line.empty() || line.find("Admin State") != std::string::npos ||
+            line.find("------") != std::string::npos) continue;
+
+        std::string trimmed = line;
+        while (!trimmed.empty() && (trimmed.front() == ' ' || trimmed.front() == '\t'))
+            trimmed.erase(trimmed.begin());
+
+        if (trimmed.empty()) continue;
+
+        bool isEnabled = (trimmed.find("Enabled") != std::string::npos);
+        bool isDisabled = (trimmed.find("Disabled") != std::string::npos);
+        if (!isEnabled && !isDisabled) continue;
+
+        std::string adapterName;
+        size_t pos = trimmed.find("Enabled");
+        if (pos == std::string::npos) pos = trimmed.find("Disabled");
+        if (pos != std::string::npos) {
+            adapterName = trimmed.substr(pos);
+            auto tabPos = adapterName.find('\t');
+            if (tabPos != std::string::npos) {
+                adapterName = adapterName.substr(tabPos + 1);
+                auto tabPos2 = adapterName.find('\t');
+                if (tabPos2 != std::string::npos)
+                    adapterName = adapterName.substr(0, tabPos2);
+                else {
+                    auto rnPos = adapterName.find("\r\n");
+                    if (rnPos != std::string::npos) adapterName = adapterName.substr(0, rnPos);
+                }
+            }
+            while (!adapterName.empty() && (adapterName.back() == ' ' || adapterName.back() == '\t' || adapterName.back() == '\r' || adapterName.back() == '\n'))
+                adapterName.pop_back();
+        }
+
+        if (adapterName.empty()) continue;
+
+        std::string status;
+        if (adapterName.find("Loopback") != std::string::npos) {
+            status = "NOT USED (Up) [loopback]";
+        }
+        else if (isDisabled) {
+            status = "NOT USED (Down)";
+        }
+        else {
+            status = "USED (Up)";
+            usedCount++;
+        }
+        totalCount++;
+        adapters.push_back(adapterName + " - " + status);
+    }
+
+    std::string adapterList;
+    for (size_t i = 0; i < adapters.size(); i++) {
+        if (i > 0) adapterList += "; ";
+        adapterList += adapters[i];
+    }
+
+    std::string message = std::to_string(usedCount) + "/" + std::to_string(totalCount) + " used: " + adapterList;
+    Helper::recordResult("Network Adapters", "OK", message);
+
+    for (auto& a : adapters) {
+        if (a.find("USED") != std::string::npos && a.find("NOT USED") == std::string::npos) {
+            Color::setForegroundColor(Color::Green);
+            std::cout << "[+] ";
+            Color::setForegroundColor(Color::White);
+            std::cout << "- Adapter: " << a << std::endl;
+        }
+        else {
+            Helper::printConcern("- Adapter: " + a);
+        }
+    }
+}
+
+void Checks::checkSecurityMitigations()
+{
+    SetConsoleTitleA("Checking Security Mitigations");
+
+    auto readRegistry = [](const char* subkey, const char* valueName) -> std::pair<bool, DWORD> {
+        DWORD val = 0;
+        bool found = Helper::readDwordValueRegistry(HKEY_LOCAL_MACHINE, subkey, valueName, &val);
+        return {found, val};
+    };
+
+    auto [vbsFound, vbsVal] = readRegistry(
+        "SYSTEM\\CurrentControlSet\\Control\\DeviceGuard", "EnableVirtualizationBasedSecurity");
+    if (vbsFound && vbsVal == 0) {
+        Helper::printSuccess("- EnableVirtualizationBasedSecurity already set to 0", false);
+    } else {
+        Helper::printConcern("- EnableVirtualizationBasedSecurity=" + (vbsFound ? std::to_string(vbsVal) : "missing"));
+    }
+
+    auto [rpsfFound, rpsfVal] = readRegistry(
+        "SYSTEM\\CurrentControlSet\\Control\\DeviceGuard", "RequirePlatformSecurityFeatures");
+    if (rpsfFound && rpsfVal == 0) {
+        Helper::printSuccess("- RequirePlatformSecurityFeatures already set to 0", false);
+    } else {
+        Helper::printConcern("- RequirePlatformSecurityFeatures=" + (rpsfFound ? std::to_string(rpsfVal) : "missing"));
+    }
+
+    auto [dgLockFound, dgLockVal] = readRegistry(
+        "SYSTEM\\CurrentControlSet\\Control\\DeviceGuard", "Locked");
+    if (dgLockFound && dgLockVal == 1) {
+        Helper::printSuccess("- DeviceGuard Locked already set to 1", false);
+    } else if (dgLockFound) {
+        Helper::printConcern("- DeviceGuard Locked=" + std::to_string(dgLockVal));
+    } else {
+        Helper::printConcern("- Change needed: Set DeviceGuard Locked to 1");
+        Helper::pendingChanges.push_back("Set DeviceGuard Locked to 1");
+    }
+
+    auto [hvciFound, hvciVal] = readRegistry(
+        "SYSTEM\\CurrentControlSet\\Control\\DeviceGuard\\Scenarios\\HypervisorEnforcedCodeIntegrity", "Enabled");
+    if (hvciFound && hvciVal == 0) {
+        Helper::printSuccess("- HVCI Enabled already set to 0", false);
+    } else {
+        Helper::printConcern("- HVCI Enabled=" + (hvciFound ? std::to_string(hvciVal) : "missing"));
+    }
+
+    auto [hvciLockFound, hvciLockVal] = readRegistry(
+        "SYSTEM\\CurrentControlSet\\Control\\DeviceGuard\\Scenarios\\HypervisorEnforcedCodeIntegrity", "Locked");
+    if (hvciLockFound && hvciLockVal == 1) {
+        Helper::printSuccess("- HVCI Locked already set to 1", false);
+    } else if (hvciLockFound) {
+        Helper::printConcern("- HVCI Locked=" + std::to_string(hvciLockVal));
+    } else {
+        Helper::printConcern("- Change needed: Set HVCI Locked to 1");
+        Helper::pendingChanges.push_back("Set HVCI Locked to 1");
+    }
+
+    auto [kvaFound, kvaVal] = readRegistry(
+        "SYSTEM\\CurrentControlSet\\Control\\Session Manager\\kernel", "FeatureSettingsOverride");
+    if (kvaFound && kvaVal == 3) {
+        Helper::printSuccess("- KVA FeatureSettingsOverride already set to 3", false);
+    } else {
+        Helper::printConcern("- KVA FeatureSettingsOverride=" + (kvaFound ? std::to_string(kvaVal) : "missing"));
+    }
+
+    auto [kvaMaskFound, kvaMaskVal] = readRegistry(
+        "SYSTEM\\CurrentControlSet\\Control\\Session Manager\\kernel", "FeatureSettingsOverrideMask");
+    if (kvaMaskFound && kvaMaskVal == 3) {
+        Helper::printSuccess("- KVA FeatureSettingsOverrideMask already set to 3", false);
+    } else {
+        Helper::printConcern("- KVA FeatureSettingsOverrideMask=" + (kvaMaskFound ? std::to_string(kvaMaskVal) : "missing"));
+    }
+
+    std::string hvLaunchOutput = Helper::runSystemCommandWithOutput(
+        "powershell -Command \"(Get-ItemProperty 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\VirtualizationSecurity' -Name 'LaunchType' -ErrorAction SilentlyContinue).LaunchType\"", 5000);
+    while (!hvLaunchOutput.empty() && (hvLaunchOutput.back() == '\r' || hvLaunchOutput.back() == '\n' || hvLaunchOutput.back() == ' '))
+        hvLaunchOutput.pop_back();
+    if (hvLaunchOutput.find("off") != std::string::npos || hvLaunchOutput.find("Off") != std::string::npos) {
+        Helper::printSuccess("- Hypervisor launch is already off", false);
+    } else if (hvLaunchOutput.empty()) {
+        Helper::printConcern("- Hypervisor launch type not found (likely off by default)");
+    } else {
+        Helper::printConcern("- Hypervisor launch=" + hvLaunchOutput);
+    }
+
+    std::string hypervOutput = Helper::runSystemCommandWithOutput(
+        "powershell -Command \"Get-WindowsOptionalFeature -Online -FeatureName Microsoft-Hyper-V-Hypervisor | Select-Object -ExpandProperty State\"", 10000);
+    if (hypervOutput.find("Disabled") != std::string::npos) {
+        Helper::printSuccess("- Microsoft-Hyper-V-Hypervisor is disabled", false);
+    } else {
+        Helper::printConcern("- Windows feature status is unclear: Microsoft-Hyper-V-Hypervisor");
+    }
+
+    std::string hypervAllOutput = Helper::runSystemCommandWithOutput(
+        "powershell -Command \"Get-WindowsOptionalFeature -Online -FeatureName Microsoft-Hyper-V-All | Select-Object -ExpandProperty State\"", 10000);
+    if (hypervAllOutput.find("Disabled") != std::string::npos) {
+        Helper::printSuccess("- Microsoft-Hyper-V-All is disabled", false);
+    } else {
+        Helper::printConcern("- Windows feature status is unclear: Microsoft-Hyper-V-All");
+    }
+
+    std::string settingsStr;
+    settingsStr += "EnableVirtualizationBasedSecurity=" + (vbsFound ? std::to_string(vbsVal) : std::string("missing"));
+    settingsStr += "; RequirePlatformSecurityFeatures=" + (rpsfFound ? std::to_string(rpsfVal) : std::string("missing"));
+    settingsStr += "; DeviceGuard Locked=" + (dgLockFound ? std::to_string(dgLockVal) : std::string("missing"));
+    settingsStr += "; HVCI Enabled=" + (hvciFound ? std::to_string(hvciVal) : std::string("missing"));
+    settingsStr += "; HVCI Locked=" + (hvciLockFound ? std::to_string(hvciLockVal) : std::string("missing"));
+    settingsStr += "; KVA FeatureSettingsOverride=" + (kvaFound ? std::to_string(kvaVal) : std::string("missing"));
+    settingsStr += "; KVA FeatureSettingsOverrideMask=" + (kvaMaskFound ? std::to_string(kvaMaskVal) : std::string("missing"));
+
+    std::string hvLaunchStr = hvLaunchOutput;
+    while (!hvLaunchStr.empty() && (hvLaunchStr.back() == '\r' || hvLaunchStr.back() == '\n' || hvLaunchStr.back() == ' '))
+        hvLaunchStr.pop_back();
+    settingsStr += "; hypervisorlaunchtype=" + (hvLaunchStr.empty() ? "off" : hvLaunchStr);
+
+    std::string hypervState = (hypervOutput.find("Enabled") != std::string::npos) ? "enabled" :
+                              (hypervOutput.find("Disabled") != std::string::npos) ? "disabled" : "unclear";
+    settingsStr += "; Microsoft-Hyper-V-Hypervisor=" + hypervState;
+
+    std::string hypervAllState = (hypervAllOutput.find("Enabled") != std::string::npos) ? "enabled" :
+                                 (hypervAllOutput.find("Disabled") != std::string::npos) ? "disabled" : "unclear";
+    settingsStr += "; Microsoft-Hyper-V-All=" + hypervAllState;
+
+    Helper::recordResult("Security Mitigations", "OK", settingsStr);
+}
+
 bool Checks::checkDefenderTamperProtection()
 {
     DWORD tamperProtection = 0;
@@ -338,6 +557,15 @@ void Checks::checkWindowsDefender()
         CloseServiceHandle(scm);
         Helper::printSuccess("- Windows Defender is disabled", false);
         Helper::recordResult("Windows Defender", "OK", "Disabled");
+        return;
+    }
+
+    if (Helper::g_phase == 1) {
+        CloseServiceHandle(service);
+        CloseServiceHandle(scm);
+        Helper::printConcern("- Change needed: Disable Windows Defender");
+        Helper::recordResult("Windows Defender", "WARN", "Needs disable");
+        Helper::pendingChanges.push_back("Disable Windows Defender");
         return;
     }
 
@@ -535,6 +763,97 @@ void Checks::checkCPUV()
     Helper::recordResult("CPU-V", "OK", "Disabled");
 }
 
+void Checks::checkRiotVanguard()
+{
+    SetConsoleTitleA("Checking for Riot Vanguard");
+
+    HKEY hKey;
+    LONG result = RegOpenKeyEx(HKEY_LOCAL_MACHINE,
+        "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall", 0, KEY_READ, &hKey);
+    if (result != ERROR_SUCCESS) {
+        Helper::printError("- Failed to check if Riot Vanguard is installed (Error 6, GLE=" + std::to_string(GetLastError()) + ")");
+        Helper::recordResult("Riot Vanguard", "FAIL", "RegOpen failed");
+        return;
+    }
+
+    DWORD subkeyIndex = 0;
+    char subkeyName[256];
+    DWORD subkeyNameSize = sizeof(subkeyName);
+    while (RegEnumKeyEx(hKey, subkeyIndex, subkeyName, &subkeyNameSize, NULL, NULL, NULL, NULL) == ERROR_SUCCESS) {
+        HKEY hSubkey;
+        result = RegOpenKeyEx(hKey, subkeyName, 0, KEY_READ, &hSubkey);
+        if (result != ERROR_SUCCESS) { RegCloseKey(hKey); Helper::recordResult("Riot Vanguard", "FAIL", "RegEnum failed"); return; }
+
+        char displayName[256];
+        DWORD displayNameSize = sizeof(displayName);
+        result = RegQueryValueEx(hSubkey, "DisplayName", NULL, NULL, (LPBYTE)displayName, &displayNameSize);
+        if (result == ERROR_SUCCESS && strcmp(displayName, "Riot Vanguard") == 0) {
+            RegCloseKey(hSubkey);
+            RegCloseKey(hKey);
+            Helper::printError("- Riot Vanguard is installed");
+            Helper::recordResult("Riot Vanguard", "FAIL", "Installed");
+            Helper::pendingChanges.push_back("Uninstall Riot Vanguard");
+            return;
+        }
+        RegCloseKey(hSubkey);
+        subkeyNameSize = sizeof(subkeyName);
+        ++subkeyIndex;
+    }
+    RegCloseKey(hKey);
+    Helper::printSuccess("- Riot Vanguard is not installed", false);
+    Helper::recordResult("Riot Vanguard", "OK", "Not installed");
+}
+
+void Checks::checkVCRedist()
+{
+    SetConsoleTitleA("Checking VCRedist");
+
+    bool alreadyInstalled = (std::filesystem::exists("C:\\Windows\\System32\\vcruntime140.dll") ||
+                             std::filesystem::exists("C:\\Windows\\SysWOW64\\vcruntime140.dll")) &&
+                            (std::filesystem::exists("C:\\Windows\\System32\\msvcp140.dll") ||
+                             std::filesystem::exists("C:\\Windows\\SysWOW64\\msvcp140.dll"));
+    if (alreadyInstalled) {
+        Helper::printSuccess("- VCRedist is already installed", false);
+        Helper::recordResult("VC Redist", "OK", "Already installed");
+    }
+    else {
+        Helper::printConcern("- VCRedist is not installed");
+        Helper::recordResult("VC Redist", "FAIL", "Not installed");
+        Helper::pendingChanges.push_back("Install VCRedist");
+    }
+}
+
+void Checks::checkTimeSync()
+{
+    SetConsoleTitleA("Checking Time Sync");
+
+    std::string result = Helper::runSystemCommandWithOutput("w32tm /query /status", 5000);
+    if (result.find("error") != std::string::npos || result.find("ERROR") != std::string::npos ||
+        result.find("The computer did not respond") != std::string::npos) {
+        Helper::printConcern("- Change needed: Sync and repair Windows Time service");
+        Helper::recordResult("Time Sync", "WARN", "Sync pending approval");
+        Helper::pendingChanges.push_back("Sync and repair Windows Time service");
+    }
+    else {
+        Helper::printSuccess("- Windows Time is synced", false);
+        Helper::recordResult("Time Sync", "OK", "Synced");
+    }
+}
+
+void Checks::checkSymbols()
+{
+    SetConsoleTitleA("Checking C:\\Symbols");
+    std::string path = "C:\\Symbols";
+    if (std::filesystem::exists(path)) {
+        Helper::printConcern("- Symbols folder found at " + path);
+        Helper::recordResult("Symbols", "WARN", "Present");
+        Helper::pendingChanges.push_back("Delete C:\\Symbols");
+    }
+    else {
+        Helper::recordResult("Symbols", "OK", "Not present");
+    }
+}
+
 void Checks::uninstallRiotVanguard() {
     SetConsoleTitleA("Checking for Riot Vanguard");
     HKEY hKey; LONG res = RegOpenKeyEx(HKEY_LOCAL_MACHINE, "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall", 0, KEY_READ, &hKey);
@@ -634,6 +953,12 @@ void Checks::disableChromeProtection() {
     if (Helper::readDwordValueRegistry(HKEY_LOCAL_MACHINE, "SOFTWARE\\Policies\\Google\\Chrome", "SafeBrowsingProtectionLevel", &status)) {
         if (status == 1) { Helper::printSuccess("- Chrome protection is disabled", false); Helper::recordResult("Chrome Protection", "OK", "Already disabled"); return; }
     }
+    if (Helper::g_phase == 1) {
+        Helper::printConcern("- Change needed: Disable Chrome protection");
+        Helper::recordResult("Chrome Protection", "WARN", "Needs disable");
+        Helper::pendingChanges.push_back("Disable Chrome protection");
+        return;
+    }
     HKEY hKey; DWORD disp; DWORD value = 1;
     LONG ck = RegCreateKeyEx(HKEY_LOCAL_MACHINE, "SOFTWARE\\Policies\\Google\\Chrome", 0, NULL, REG_OPTION_NON_VOLATILE, KEY_READ | KEY_WRITE, NULL, &hKey, &disp);
     LONG cd = RegSetValueEx(hKey, "SafeBrowsingProtectionLevel", NULL, REG_DWORD, (const BYTE*)&value, sizeof(value));
@@ -673,6 +998,12 @@ void Checks::deleteSymbols() {
 void Checks::checkFastBoot() {
     SetConsoleTitleA("Checking Fast-Boot"); DWORD s;
     if (Helper::readDwordValueRegistry(HKEY_LOCAL_MACHINE, "SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Power", "HiberbootEnabled", &s)) { if (s == 0) { Helper::printSuccess("- Fast-Boot is disabled", false); Helper::recordResult("Fast Boot", "OK", "Already disabled"); return; } }
+    if (Helper::g_phase == 1) {
+        Helper::printConcern("- Change needed: Disable Fast-Boot");
+        Helper::recordResult("Fast Boot", "WARN", "Needs disable");
+        Helper::pendingChanges.push_back("Disable Fast-Boot");
+        return;
+    }
     HKEY hKey; DWORD disp; DWORD v = 0;
     LONG ck = RegCreateKeyEx(HKEY_LOCAL_MACHINE, "SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Power", 0, NULL, REG_OPTION_NON_VOLATILE, KEY_READ | KEY_WRITE, NULL, &hKey, &disp);
     LONG cd = RegSetValueEx(hKey, "HiberbootEnabled", NULL, REG_DWORD, (const BYTE*)&v, sizeof(v)); RegCloseKey(hKey);
@@ -683,6 +1014,12 @@ void Checks::checkFastBoot() {
 void Checks::checkExploitProtection() {
     SetConsoleTitleA("Checking Exploit-Protection"); DWORD s;
     if (Helper::readDwordValueRegistry(HKEY_LOCAL_MACHINE, "SOFTWARE\\Policies\\Microsoft\\Windows Defender Security Center\\App and Browser protection", "DisallowExploitProtectionOverride", &s)) { if (s == 1) { Helper::printSuccess("- Exploit-Protection is disabled", false); Helper::recordResult("Exploit Protection", "OK", "Already disabled"); return; } }
+    if (Helper::g_phase == 1) {
+        Helper::printConcern("- Change needed: Disable Exploit-Protection");
+        Helper::recordResult("Exploit Protection", "WARN", "Needs disable");
+        Helper::pendingChanges.push_back("Disable Exploit-Protection");
+        return;
+    }
     HKEY hKey; DWORD disp; DWORD v = 1;
     LONG ck = RegCreateKeyEx(HKEY_LOCAL_MACHINE, "SOFTWARE\\Policies\\Microsoft\\Windows Defender Security Center\\App and Browser protection", 0, NULL, REG_OPTION_NON_VOLATILE, KEY_READ | KEY_WRITE, NULL, &hKey, &disp);
     LONG cd = RegSetValueEx(hKey, "DisallowExploitProtectionOverride", NULL, REG_DWORD, (const BYTE*)&v, sizeof(v)); RegCloseKey(hKey);
@@ -693,6 +1030,12 @@ void Checks::checkExploitProtection() {
 void Checks::checkSmartScreen() {
     SetConsoleTitleA("Checking SmartScreen"); DWORD s;
     if (Helper::readDwordValueRegistry(HKEY_LOCAL_MACHINE, "SOFTWARE\\Policies\\Microsoft\\Windows\\System", "EnableSmartScreen", &s)) { if (s == 0) { Helper::printSuccess("- SmartScreen is disabled", false); Helper::recordResult("SmartScreen", "OK", "Already disabled"); return; } }
+    if (Helper::g_phase == 1) {
+        Helper::printConcern("- Change needed: Disable SmartScreen");
+        Helper::recordResult("SmartScreen", "WARN", "Needs disable");
+        Helper::pendingChanges.push_back("Disable SmartScreen");
+        return;
+    }
     HKEY hKey; DWORD disp; DWORD v = 0;
     LONG ck = RegCreateKeyEx(HKEY_LOCAL_MACHINE, "SOFTWARE\\Policies\\Microsoft\\Windows\\System", 0, NULL, REG_OPTION_NON_VOLATILE, KEY_READ | KEY_WRITE, NULL, &hKey, &disp);
     LONG cd = RegSetValueEx(hKey, "EnableSmartScreen", NULL, REG_DWORD, (const BYTE*)&v, sizeof(v)); RegCloseKey(hKey);
@@ -703,6 +1046,12 @@ void Checks::checkSmartScreen() {
 void Checks::checkGameBar() {
     SetConsoleTitleA("Checking Xbox Gamebar"); DWORD s;
     if (Helper::readDwordValueRegistry(HKEY_LOCAL_MACHINE, "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\GameDVR", "AppCaptureEnabled", &s)) { if (s == 1) { Helper::printSuccess("- Gamebar is enabled", false); Helper::recordResult("Game Bar", "OK", "Already enabled"); return; } }
+    if (Helper::g_phase == 1) {
+        Helper::printConcern("- Change needed: Enable Gamebar");
+        Helper::recordResult("Game Bar", "WARN", "Needs enable");
+        Helper::pendingChanges.push_back("Enable Gamebar");
+        return;
+    }
     HKEY hKey; DWORD disp; DWORD v = 1;
     LONG ck = RegCreateKeyEx(HKEY_LOCAL_MACHINE, "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\GameDVR", 0, NULL, REG_OPTION_NON_VOLATILE, KEY_READ | KEY_WRITE, NULL, &hKey, &disp);
     LONG cd = RegSetValueEx(hKey, "AppCaptureEnabled", NULL, REG_DWORD, (const BYTE*)&v, sizeof(v)); RegCloseKey(hKey);
@@ -748,6 +1097,17 @@ void Checks::checkCoreIsolation() {
     if (hvciRead && hvci == 0 && vbsRead && vbs == 0) {
         Helper::printSuccess("- HVCI is disabled", false);
         Helper::recordResult("Core Isolation", "OK", "Disabled");
+        return;
+    }
+
+    if (Helper::g_phase == 1) {
+        std::string needs;
+        if (hvci == 1) needs += "HVCI";
+        if (vbs == 1) needs += (needs.empty() ? "" : ", ") + std::string("VBS");
+        Helper::printConcern("- Change needed: Disable " + needs);
+        Helper::recordResult("Core Isolation", "WARN", "Needs disable: " + needs);
+        if (hvci == 1) Helper::pendingChanges.push_back("Disable HVCI");
+        if (vbs == 1) Helper::pendingChanges.push_back("Disable VBS");
         return;
     }
 
@@ -803,6 +1163,80 @@ void Checks::checkDMAProtection() {
     DWORD ds = 0;
     if (Helper::readDwordValueRegistry(HKEY_LOCAL_MACHINE, "SYSTEM\\CurrentControlSet\\Control\\DeviceGuard", "KernelDmaProtectionState", &ds)) { if (ds == 0) { Helper::printSuccess("- Kernel DMA Protection is disabled", false); Helper::recordResult("DMA Protection", "OK", "Disabled"); } else { Helper::printError("- Kernel DMA Protection state=" + std::to_string(ds)); Helper::recordResult("DMA Protection", "FAIL", "State=" + std::to_string(ds)); } return; }
     Helper::printSuccess("- Kernel DMA Protection not active", false); Helper::recordResult("DMA Protection", "OK", "Not supported");
+}
+
+void Helper::applyPendingChanges()
+{
+    if (pendingChanges.empty()) return;
+
+    for (auto& change : pendingChanges) {
+        if (change.find("Sync and repair Windows Time service") != std::string::npos) {
+            Checks::syncWindowsTime();
+        }
+        else if (change.find("Install VCRedist") != std::string::npos) {
+            std::thread vcThread(Checks::installVCRedist);
+            while (Helper::vcComplete == false) {
+                Sleep(10);
+                Helper::vcCheckSleepTimes = Helper::vcCheckSleepTimes + 10;
+                if (Helper::vcCheckSleepTimes >= 30000) {
+                    Helper::printConcern("- VCRedist is taking too long, continuing without waiting");
+                    break;
+                }
+            }
+            vcThread.detach();
+        }
+        else if (change.find("Uninstall Riot Vanguard") != std::string::npos) {
+            Checks::uninstallRiotVanguard();
+        }
+        else if (change.find("Delete C:\\Symbols") != std::string::npos) {
+            Checks::deleteSymbols();
+        }
+        else if (change.find("Set DeviceGuard Locked to 1") != std::string::npos) {
+            HKEY hKey;
+            if (RegCreateKeyEx(HKEY_LOCAL_MACHINE, "SYSTEM\\CurrentControlSet\\Control\\DeviceGuard",
+                0, NULL, REG_OPTION_NON_VOLATILE, KEY_WRITE, NULL, &hKey, NULL) == ERROR_SUCCESS) {
+                DWORD val = 1;
+                RegSetValueEx(hKey, "Locked", 0, REG_DWORD, (BYTE*)&val, sizeof(val));
+                RegCloseKey(hKey);
+                Helper::printSuccess("- Set DeviceGuard Locked from missing to 1", true);
+                Helper::restartRequired = true;
+            }
+        }
+        else if (change.find("Set HVCI Locked to 1") != std::string::npos) {
+            HKEY hKey;
+            if (RegCreateKeyEx(HKEY_LOCAL_MACHINE, "SYSTEM\\CurrentControlSet\\Control\\DeviceGuard\\Scenarios\\HypervisorEnforcedCodeIntegrity",
+                0, NULL, REG_OPTION_NON_VOLATILE, KEY_WRITE, NULL, &hKey, NULL) == ERROR_SUCCESS) {
+                DWORD val = 1;
+                RegSetValueEx(hKey, "Locked", 0, REG_DWORD, (BYTE*)&val, sizeof(val));
+                RegCloseKey(hKey);
+                Helper::printSuccess("- Set HVCI Locked from missing to 1", true);
+                Helper::restartRequired = true;
+            }
+        }
+        else if (change.find("Disable Fast-Boot") != std::string::npos) {
+            Checks::checkFastBoot();
+        }
+        else if (change.find("Disable Exploit-Protection") != std::string::npos) {
+            Checks::checkExploitProtection();
+        }
+        else if (change.find("Disable SmartScreen") != std::string::npos) {
+            Checks::checkSmartScreen();
+        }
+        else if (change.find("Enable Gamebar") != std::string::npos) {
+            Checks::checkGameBar();
+        }
+        else if (change.find("Disable Chrome protection") != std::string::npos) {
+            Checks::disableChromeProtection();
+        }
+        else if (change.find("Disable HVCI") != std::string::npos || change.find("Disable VBS") != std::string::npos) {
+            Checks::checkCoreIsolation();
+        }
+        else if (change.find("Disable Windows Defender") != std::string::npos) {
+            Checks::checkWindowsDefender();
+        }
+    }
+
+    pendingChanges.clear();
 }
 
 void Helper::setupConsole() { HANDLE hStdin = GetStdHandle(STD_INPUT_HANDLE); DWORD mode = 0; GetConsoleMode(hStdin, &mode); SetConsoleMode(hStdin, mode & ~(ENABLE_QUICK_EDIT_MODE | ENABLE_EXTENDED_FLAGS)); SetConsoleTitleA("Initializing"); }

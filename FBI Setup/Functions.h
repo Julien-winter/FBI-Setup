@@ -52,17 +52,21 @@ namespace Checks {
     bool checkDefenderTamperProtection();
     bool checkAVTamperProtection(const std::string& avName);
     void checkWindowsDefender(); void check3rdPartyAntiVirus(); void checkCPUV();
+    void checkRiotVanguard(); void checkVCRedist();
     void uninstallRiotVanguard(); void installVCRedist(); void checkSecureBoot();
-    void isChromeInstalled(); void syncWindowsTime(); void disableChromeProtection();
-    void checkWinver(); void deleteSymbols(); void checkFastBoot(); void checkExploitProtection();
+    void isChromeInstalled(); void checkTimeSync(); void syncWindowsTime(); void disableChromeProtection();
+    void checkWinver(); void checkSymbols(); void deleteSymbols(); void checkFastBoot(); void checkExploitProtection();
     void checkSmartScreen(); void checkGameBar(); void checkModifiedOS(); void checkTPMStatus();
     void checkCoreIsolation(); void checkDMAProtection();
-    void checkInternet(); void checkVM(); void checkForUpdate();
+    void checkInternet(); void checkNetworkAdapters(); void checkVM(); void checkForUpdate();
+    void checkSecurityMitigations();
 }
 namespace Helper {
     extern bool restartRequired;
     extern std::atomic<bool> vcComplete;
     extern int vcCheckSleepTimes;
+    extern int g_phase;
+    extern std::vector<std::string> pendingChanges;
     extern bool titleLoopBool;
     extern std::mutex consoleMutex;
     extern std::mutex logMutex;
@@ -94,6 +98,7 @@ namespace Helper {
     std::string escapeJSON(const std::string& s);
     std::string getTimestampISO();
     std::string fetchURL(const std::wstring& url);
+    void applyPendingChanges();
 }
 namespace Color {
     void setBackgroundColor(const RGBColor& aColor);
