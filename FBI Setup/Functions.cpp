@@ -559,7 +559,7 @@ void Checks::createRestorePoint()
     rpi.dwRestorePtType = MODIFY_SETTINGS;
     rpi.llSequenceNumber = 0;
     std::wstring desc = L"FBI-Setup v" + std::wstring(Helper::g_appVersion.begin(), Helper::g_appVersion.end());
-    wcsncpy_s(rpi.szDescription, desc.c_str(), _TRUNCATE);
+    wcsncpy_s(rpi.szDescription, MAX_PATH, desc.c_str(), _TRUNCATE);
     STATEMGRSTATUS sms;
     if (pSR(&rpi, &sms)) {
         Helper::printSuccess("- System Restore Point created", true);
@@ -654,6 +654,8 @@ void Checks::checkWindowsDefender()
     SetConsoleTitleA("Checking Windows Defender");
 
     if (checkDefenderTamperProtection()) {
+        Helper::printError("- Windows Defender cannot be disabled (Tamper Protection prevents changes)");
+        Helper::recordResult("Windows Defender", "FAIL", "Tamper protection enabled");
         return;
     }
 
@@ -829,10 +831,11 @@ void Checks::check3rdPartyAntiVirus()
                     RegQueryValueEx(hSubkey, "DisplayName", NULL, NULL, (LPBYTE)dn, &dnSize);
                     std::string displayName(dn);
                     for (auto& av : {antivirusList}) {
-                        size_t comma = 0;
-                        while (comma != std::string::npos) {
-                            std::string single = av.substr(comma == 0 ? 0 : comma + 2);
-                            comma = av.find(",", comma == 0 ? 0 : comma + 2);
+                        size_t start = 0;
+                        while (start != std::string::npos) {
+                            size_t comma = av.find(",", start);
+                            std::string single = av.substr(start, comma == std::string::npos ? comma : comma - start);
+                            if (!single.empty() && single[0] == ' ') single = single.substr(1);
                             if (displayName.find(single) != std::string::npos) {
                                 char uninstall[512] = ""; DWORD usSize = sizeof(uninstall);
                                 if (RegQueryValueEx(hSubkey, "UninstallString", NULL, NULL, (LPBYTE)uninstall, &usSize) == ERROR_SUCCESS) {
@@ -843,6 +846,7 @@ void Checks::check3rdPartyAntiVirus()
                                 }
                                 break;
                             }
+                            start = comma == std::string::npos ? comma : comma + 1;
                         }
                     }
                     RegCloseKey(hSubkey);
@@ -926,9 +930,13 @@ void Checks::checkRiotVanguard()
         if (result == ERROR_SUCCESS && strcmp(displayName, "Riot Vanguard") == 0) {
             RegCloseKey(hSubkey);
             RegCloseKey(hKey);
-            Helper::printError("- Riot Vanguard is installed");
-            Helper::recordResult("Riot Vanguard", "FAIL", "Installed");
-            Helper::pendingChanges.push_back("Uninstall Riot Vanguard");
+            if (Helper::g_phase == 1) {
+                Helper::printConcern("- Change needed: Uninstall Riot Vanguard");
+                Helper::recordResult("Riot Vanguard", "WARN", "Needs uninstall");
+                Helper::pendingChanges.push_back("Uninstall Riot Vanguard");
+                return;
+            }
+            uninstallRiotVanguard();
             return;
         }
         RegCloseKey(hSubkey);
@@ -1074,7 +1082,7 @@ void Checks::isChromeInstalled() {
     wchar_t lad[MAX_PATH];
     if (GetEnvironmentVariableW(L"LOCALAPPDATA", lad, MAX_PATH) > 0) paths.push_back(std::wstring(lad) + L"\\Google\\Chrome\\Application\\chrome.exe");
     for (auto& p : paths) if (std::filesystem::exists(p)) { Helper::printSuccess("- Google Chrome is installed", false); Helper::recordResult("Google Chrome", "OK", "Installed"); return; }
-    Helper::printError("- Google Chrome is not installed"); Helper::recordResult("Google Chrome", "FAIL", "Not installed"); Sleep(1000); Helper::runSystemCommand("start https://www.google.com/chrome/");
+    Helper::printConcern("- Google Chrome is not installed (needed to disable Chrome protection)"); Helper::recordResult("Google Chrome", "WARN", "Not installed"); Sleep(1000); Helper::runSystemCommand("start https://www.google.com/chrome/");
 }
 
 void Checks::syncWindowsTime() {
@@ -1123,10 +1131,12 @@ void Checks::disableChromeProtection() {
     }
     HKEY hKey; DWORD disp; DWORD value = 1;
     LONG ck = RegCreateKeyEx(HKEY_LOCAL_MACHINE, "SOFTWARE\\Policies\\Google\\Chrome", 0, NULL, REG_OPTION_NON_VOLATILE, KEY_READ | KEY_WRITE, NULL, &hKey, &disp);
-    LONG cd = RegSetValueEx(hKey, "SafeBrowsingProtectionLevel", NULL, REG_DWORD, (const BYTE*)&value, sizeof(value));
-    RegCloseKey(hKey);
-    if (ck == ERROR_SUCCESS && cd == ERROR_SUCCESS) { Helper::printSuccess("- Disabled Chrome protection", true); Helper::recordResult("Chrome Protection", "OK", "Disabled (changed)"); }
-    else { Helper::printError("- Failed to disable Chrome protection (Error 20/21)"); Helper::recordResult("Chrome Protection", "FAIL", "Registry write failed"); }
+    if (ck == ERROR_SUCCESS) {
+        LONG cd = RegSetValueEx(hKey, "SafeBrowsingProtectionLevel", NULL, REG_DWORD, (const BYTE*)&value, sizeof(value));
+        RegCloseKey(hKey);
+        if (cd == ERROR_SUCCESS) { Helper::printSuccess("- Disabled Chrome protection", true); Helper::recordResult("Chrome Protection", "OK", "Disabled (changed)"); return; }
+    }
+    Helper::printError("- Failed to disable Chrome protection (Error 20/21)"); Helper::recordResult("Chrome Protection", "FAIL", "Registry write failed");
 }
 
 void Checks::checkWinver() {
@@ -1176,9 +1186,11 @@ void Checks::checkFastBoot() {
     }
     HKEY hKey; DWORD disp; DWORD v = 0;
     LONG ck = RegCreateKeyEx(HKEY_LOCAL_MACHINE, "SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Power", 0, NULL, REG_OPTION_NON_VOLATILE, KEY_READ | KEY_WRITE, NULL, &hKey, &disp);
-    LONG cd = RegSetValueEx(hKey, "HiberbootEnabled", NULL, REG_DWORD, (const BYTE*)&v, sizeof(v)); RegCloseKey(hKey);
-    if (ck == ERROR_SUCCESS && cd == ERROR_SUCCESS) { Helper::printSuccess("- Disabled Fast-Boot", true); Helper::restartRequired = true; Helper::recordResult("Fast Boot", "OK", "Disabled (changed)"); }
-    else { Helper::printError("- Failed to disable Fast-Boot (Error 31/32)"); Helper::recordResult("Fast Boot", "FAIL", "Registry failed"); }
+    if (ck == ERROR_SUCCESS) {
+        LONG cd = RegSetValueEx(hKey, "HiberbootEnabled", NULL, REG_DWORD, (const BYTE*)&v, sizeof(v)); RegCloseKey(hKey);
+        if (cd == ERROR_SUCCESS) { Helper::printSuccess("- Disabled Fast-Boot", true); Helper::restartRequired = true; Helper::recordResult("Fast Boot", "OK", "Disabled (changed)"); return; }
+    }
+    Helper::printError("- Failed to disable Fast-Boot (Error 31/32)"); Helper::recordResult("Fast Boot", "FAIL", "Registry failed");
 }
 
 void Checks::checkExploitProtection() {
@@ -1192,9 +1204,11 @@ void Checks::checkExploitProtection() {
     }
     HKEY hKey; DWORD disp; DWORD v = 1;
     LONG ck = RegCreateKeyEx(HKEY_LOCAL_MACHINE, "SOFTWARE\\Policies\\Microsoft\\Windows Defender Security Center\\App and Browser protection", 0, NULL, REG_OPTION_NON_VOLATILE, KEY_READ | KEY_WRITE, NULL, &hKey, &disp);
-    LONG cd = RegSetValueEx(hKey, "DisallowExploitProtectionOverride", NULL, REG_DWORD, (const BYTE*)&v, sizeof(v)); RegCloseKey(hKey);
-    if (ck == ERROR_SUCCESS && cd == ERROR_SUCCESS) { Helper::printSuccess("- Disabled Exploit-Protection", true); Helper::restartRequired = true; Helper::recordResult("Exploit Protection", "OK", "Disabled (changed)"); }
-    else { Helper::printError("- Failed to disable Exploit-Protection (Error 25/26)"); Helper::recordResult("Exploit Protection", "FAIL", "Registry failed"); }
+    if (ck == ERROR_SUCCESS) {
+        LONG cd = RegSetValueEx(hKey, "DisallowExploitProtectionOverride", NULL, REG_DWORD, (const BYTE*)&v, sizeof(v)); RegCloseKey(hKey);
+        if (cd == ERROR_SUCCESS) { Helper::printSuccess("- Disabled Exploit-Protection", true); Helper::restartRequired = true; Helper::recordResult("Exploit Protection", "OK", "Disabled (changed)"); return; }
+    }
+    Helper::printError("- Failed to disable Exploit-Protection (Error 25/26)"); Helper::recordResult("Exploit Protection", "FAIL", "Registry failed");
 }
 
 void Checks::checkSmartScreen() {
@@ -1208,9 +1222,11 @@ void Checks::checkSmartScreen() {
     }
     HKEY hKey; DWORD disp; DWORD v = 0;
     LONG ck = RegCreateKeyEx(HKEY_LOCAL_MACHINE, "SOFTWARE\\Policies\\Microsoft\\Windows\\System", 0, NULL, REG_OPTION_NON_VOLATILE, KEY_READ | KEY_WRITE, NULL, &hKey, &disp);
-    LONG cd = RegSetValueEx(hKey, "EnableSmartScreen", NULL, REG_DWORD, (const BYTE*)&v, sizeof(v)); RegCloseKey(hKey);
-    if (ck == ERROR_SUCCESS && cd == ERROR_SUCCESS) { Helper::printSuccess("- Disabled SmartScreen", true); Helper::restartRequired = true; Helper::recordResult("SmartScreen", "OK", "Disabled (changed)"); }
-    else { Helper::printError("- Failed to disable SmartScreen (Error 27/28)"); Helper::recordResult("SmartScreen", "FAIL", "Registry failed"); }
+    if (ck == ERROR_SUCCESS) {
+        LONG cd = RegSetValueEx(hKey, "EnableSmartScreen", NULL, REG_DWORD, (const BYTE*)&v, sizeof(v)); RegCloseKey(hKey);
+        if (cd == ERROR_SUCCESS) { Helper::printSuccess("- Disabled SmartScreen", true); Helper::restartRequired = true; Helper::recordResult("SmartScreen", "OK", "Disabled (changed)"); return; }
+    }
+    Helper::printError("- Failed to disable SmartScreen (Error 27/28)"); Helper::recordResult("SmartScreen", "FAIL", "Registry failed");
 }
 
 void Checks::checkGameBar() {
@@ -1224,9 +1240,11 @@ void Checks::checkGameBar() {
     }
     HKEY hKey; DWORD disp; DWORD v = 1;
     LONG ck = RegCreateKeyEx(HKEY_LOCAL_MACHINE, "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\GameDVR", 0, NULL, REG_OPTION_NON_VOLATILE, KEY_READ | KEY_WRITE, NULL, &hKey, &disp);
-    LONG cd = RegSetValueEx(hKey, "AppCaptureEnabled", NULL, REG_DWORD, (const BYTE*)&v, sizeof(v)); RegCloseKey(hKey);
-    if (ck == ERROR_SUCCESS && cd == ERROR_SUCCESS) { Helper::printSuccess("- Enabled Gamebar", true); Helper::restartRequired = true; Helper::recordResult("Game Bar", "OK", "Enabled (changed)"); }
-    else { Helper::printError("- Failed to enable Gamebar (Error 29/30)"); Helper::recordResult("Game Bar", "FAIL", "Registry failed"); }
+    if (ck == ERROR_SUCCESS) {
+        LONG cd = RegSetValueEx(hKey, "AppCaptureEnabled", NULL, REG_DWORD, (const BYTE*)&v, sizeof(v)); RegCloseKey(hKey);
+        if (cd == ERROR_SUCCESS) { Helper::printSuccess("- Enabled Gamebar", true); Helper::restartRequired = true; Helper::recordResult("Game Bar", "OK", "Enabled (changed)"); return; }
+    }
+    Helper::printError("- Failed to enable Gamebar (Error 29/30)"); Helper::recordResult("Game Bar", "FAIL", "Registry failed");
 }
 
 void Checks::checkModifiedOS() {
