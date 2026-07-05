@@ -120,7 +120,7 @@ void Helper::showHelp() {
     std::cout << "  11=Symbols 12=FastBoot 13=ExploitProtection 14=SmartScreen\n";
     std::cout << "  15=GameBar 16=TPM 17=CoreIsolation 18=DMAProtection 19=ModifiedOS\n";
     std::cout << "  20=Internet 21=VM-Detect 22=Auto-Update 23=NetworkAdapters 24=SecurityMitigations\n";
-    std::cout << "  25=UAC 26=WindowsUpdate 27=AntiCheat\n";
+    std::cout << "  25=UAC 26=WindowsUpdate\n";
 }
 
 CLIConfig Helper::parseCLI(int argc, char* argv[]) {
@@ -403,16 +403,20 @@ void Checks::checkSecurityMitigations()
         "SYSTEM\\CurrentControlSet\\Control\\Session Manager\\kernel", "FeatureSettingsOverride");
     if (kvaFound && kvaVal == 3) {
         Helper::printSuccess("- KVA FeatureSettingsOverride already set to 3", false);
+    } else if (!kvaFound) {
+        Helper::printSuccess("- KVA FeatureSettingsOverride not configured (off by default)", false);
     } else {
-        Helper::printConcern("- KVA FeatureSettingsOverride=" + (kvaFound ? std::to_string(kvaVal) : "missing"));
+        Helper::printConcern("- KVA FeatureSettingsOverride=" + std::to_string(kvaVal));
     }
 
     auto [kvaMaskFound, kvaMaskVal] = readRegistry(
         "SYSTEM\\CurrentControlSet\\Control\\Session Manager\\kernel", "FeatureSettingsOverrideMask");
     if (kvaMaskFound && kvaMaskVal == 3) {
         Helper::printSuccess("- KVA FeatureSettingsOverrideMask already set to 3", false);
+    } else if (!kvaMaskFound) {
+        Helper::printSuccess("- KVA FeatureSettingsOverrideMask not configured (off by default)", false);
     } else {
-        Helper::printConcern("- KVA FeatureSettingsOverrideMask=" + (kvaMaskFound ? std::to_string(kvaMaskVal) : "missing"));
+        Helper::printConcern("- KVA FeatureSettingsOverrideMask=" + std::to_string(kvaMaskVal));
     }
 
     std::string hvLaunchOutput = Helper::runSystemCommandWithOutput(
@@ -429,18 +433,26 @@ void Checks::checkSecurityMitigations()
 
     std::string hypervOutput = Helper::runSystemCommandWithOutput(
         "powershell -Command \"Get-WindowsOptionalFeature -Online -FeatureName Microsoft-Hyper-V-Hypervisor | Select-Object -ExpandProperty State\"", 10000);
+    while (!hypervOutput.empty() && (hypervOutput.back() == '\r' || hypervOutput.back() == '\n'))
+        hypervOutput.pop_back();
     if (hypervOutput.find("Disabled") != std::string::npos) {
         Helper::printSuccess("- Microsoft-Hyper-V-Hypervisor is disabled", false);
+    } else if (hypervOutput.empty()) {
+        Helper::printSuccess("- Microsoft-Hyper-V-Hypervisor not available (disabled by default)", false);
     } else {
-        Helper::printConcern("- Windows feature status is unclear: Microsoft-Hyper-V-Hypervisor");
+        Helper::printConcern("- Microsoft-Hyper-V-Hypervisor=" + hypervOutput);
     }
 
     std::string hypervAllOutput = Helper::runSystemCommandWithOutput(
         "powershell -Command \"Get-WindowsOptionalFeature -Online -FeatureName Microsoft-Hyper-V-All | Select-Object -ExpandProperty State\"", 10000);
+    while (!hypervAllOutput.empty() && (hypervAllOutput.back() == '\r' || hypervAllOutput.back() == '\n'))
+        hypervAllOutput.pop_back();
     if (hypervAllOutput.find("Disabled") != std::string::npos) {
         Helper::printSuccess("- Microsoft-Hyper-V-All is disabled", false);
+    } else if (hypervAllOutput.empty()) {
+        Helper::printSuccess("- Microsoft-Hyper-V-All not available (disabled by default)", false);
     } else {
-        Helper::printConcern("- Windows feature status is unclear: Microsoft-Hyper-V-All");
+        Helper::printConcern("- Microsoft-Hyper-V-All=" + hypervAllOutput);
     }
 
     std::string settingsStr;
@@ -522,60 +534,6 @@ void Checks::checkWindowsUpdate()
     if (!updateDisabled) {
         Helper::printSuccess("- Windows Update is active", false);
         Helper::recordResult("Windows Update", "OK", "Active");
-    }
-}
-
-void Checks::checkAntiCheat()
-{
-    SetConsoleTitleA("Checking for Anti-Cheat Software");
-
-    struct AntiCheatEntry {
-        std::string name;
-        std::string serviceName;
-        std::string regKey;
-        std::string regValue;
-    };
-
-    std::vector<AntiCheatEntry> entries = {
-        {"EasyAntiCheat", "EasyAntiCheat", "SYSTEM\\CurrentControlSet\\Services\\EasyAntiCheat", ""},
-        {"BattlEye", "BEDaisy", "SYSTEM\\CurrentControlSet\\Services\\BEDaisy", ""},
-        {"FaceIt Anti-Cheat", "FAC", "SYSTEM\\CurrentControlSet\\Services\\FAC", ""},
-        {"PunkBuster", "PnkBstrA", "SYSTEM\\CurrentControlSet\\Services\\PnkBstrA", ""},
-        {"nProtect GameGuard", "npgmsvc", "SYSTEM\\CurrentControlSet\\Services\\npgmsvc", ""},
-        {"Xigncode3", "XIGNCODE3", "SYSTEM\\CurrentControlSet\\Services\\XIGNCODE3", ""},
-        {"Denuvo Anti-Cheat", "denuvo", "SYSTEM\\CurrentControlSet\\Services\\denuvo", ""},
-        {"StarForce", "StarForce", "SYSTEM\\CurrentControlSet\\Services\\StarForce", ""},
-    };
-
-    std::vector<std::string> found;
-    for (auto& ac : entries) {
-        DWORD dummy;
-        if (Helper::readDwordValueRegistry(HKEY_LOCAL_MACHINE, ac.regKey.c_str(), "Start", &dummy)) {
-            found.push_back(ac.name);
-        } else {
-            SC_HANDLE scm = OpenSCManager(NULL, NULL, SC_MANAGER_CONNECT);
-            if (scm) {
-                SC_HANDLE svc = OpenService(scm, ac.serviceName.c_str(), SERVICE_QUERY_STATUS);
-                if (svc) {
-                    found.push_back(ac.name);
-                    CloseServiceHandle(svc);
-                }
-                CloseServiceHandle(scm);
-            }
-        }
-    }
-
-    if (found.empty()) {
-        Helper::printSuccess("- No anti-cheat software detected", false);
-        Helper::recordResult("Anti-Cheat", "OK", "None detected");
-    } else {
-        std::string list;
-        for (size_t i = 0; i < found.size(); i++) {
-            if (i > 0) list += ", ";
-            list += found[i];
-        }
-        Helper::printError("- Anti-cheat software detected: " + list);
-        Helper::recordResult("Anti-Cheat", "FAIL", "Found: " + list);
     }
 }
 

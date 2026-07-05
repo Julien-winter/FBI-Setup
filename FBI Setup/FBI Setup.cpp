@@ -136,9 +136,6 @@ int main(int argc, char* argv[])
     if (!Helper::isCheckSkipped(26)) Checks::checkWindowsUpdate();
     else { Helper::printConcern("- Skipped: Windows Update"); Helper::recordResult("Windows Update", "SKIPPED", ""); }
 
-    if (!Helper::isCheckSkipped(27)) Checks::checkAntiCheat();
-    else { Helper::printConcern("- Skipped: Anti-Cheat"); Helper::recordResult("Anti-Cheat", "SKIPPED", ""); }
-
     Color::setForegroundColor(Color::LightGray);
     std::cout << "-----------------------------------------------------------------\n";
     Color::setForegroundColor(Color::Cyan);
@@ -223,7 +220,6 @@ int main(int argc, char* argv[])
         if (!Helper::isCheckSkipped(24)) Checks::checkSecurityMitigations();
         if (!Helper::isCheckSkipped(25)) Checks::checkUAC();
         if (!Helper::isCheckSkipped(26)) Checks::checkWindowsUpdate();
-        if (!Helper::isCheckSkipped(27)) Checks::checkAntiCheat();
     }
 
     Color::setForegroundColor(Color::LightGray);
