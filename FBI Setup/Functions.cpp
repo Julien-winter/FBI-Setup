@@ -650,7 +650,7 @@ void Checks::checkSecurityMitigations()
     };
 
     // Create restore point before making security changes
-    if (changed || Helper::hasPendingChanges()) {
+    if (Helper::applyChanges) {
         HINSTANCE hSrDll = LoadLibraryA("srclient.dll");
         if (hSrDll) {
             typedef BOOL(WINAPI* SRSetRestorePointFn)(PRESTOREPOINTINFOW, PSTATEMGRSTATUS);
@@ -902,6 +902,7 @@ void Checks::checkForUpdate()
         Helper::recordResult("Auto-Update", "WARN", "New version: " + tag + (usedCache ? " (cached weekly check)" : ""));
     }
     else {
+        Helper::printSuccess("- No new updates (v" + Helper::g_appVersion + ")", false);
         Helper::recordResult("Auto-Update", "OK",
             "Up to date (v" + Helper::g_appVersion + ")" + (usedCache ? " - checked this week" : ""));
     }

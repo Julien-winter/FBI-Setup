@@ -176,10 +176,8 @@ int main(int argc, char* argv[])
 
             if (!Helper::isCheckSkipped(1)) Checks::checkWindowsDefender();
             if (!Helper::isCheckSkipped(2)) Checks::check3rdPartyAntiVirus();
-            if (!Helper::isCheckSkipped(4)) Checks::checkCPUV();
             if (!Helper::isCheckSkipped(5)) Checks::uninstallRiotVanguard();
             if (!Helper::isCheckSkipped(6)) Checks::installVCRedist();
-            if (!Helper::isCheckSkipped(7)) Checks::isChromeInstalled();
             if (!Helper::isCheckSkipped(8)) Checks::disableChromeProtection();
             if (!Helper::isCheckSkipped(9)) Checks::syncWindowsTime();
             if (!Helper::isCheckSkipped(11)) Checks::deleteSymbols();
