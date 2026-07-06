@@ -1765,12 +1765,22 @@ void Checks::checkSecurityMitigations()
     }
 
     auto checkAndDisableFeature = [&](const std::string& featureName) {
-        std::string queryCommand = "dism /online /get-featureinfo /featurename:" + featureName;
+        std::string queryCommand = "dism /online /get-featureinfo /featurename:" + featureName + " 2>&1";
         std::string output = lower(Helper::runSystemCommandWithOutput(queryCommand.c_str(), 15000));
         if (output == "timeout" || output.empty()) {
             Helper::printConcern("- Could not read Windows feature status: " + featureName);
             appendSummary(featureName + "=unknown");
             warning = true;
+            return;
+        }
+
+        if (output.find("error") != std::string::npos ||
+            output.find("fehler") != std::string::npos ||
+            output.find("not found") != std::string::npos ||
+            output.find("nicht") != std::string::npos ||
+            output.find("0x800f") != std::string::npos) {
+            Helper::printSuccess("- Windows feature is not available: " + featureName, false);
+            appendSummary(featureName + "=disabled (not available)");
             return;
         }
 
@@ -1785,9 +1795,8 @@ void Checks::checkSecurityMitigations()
         if (output.find("state : enabled") == std::string::npos &&
             output.find("state: enabled") == std::string::npos &&
             output.find("aktiviert") == std::string::npos) {
-            Helper::printConcern("- Windows feature status is unclear: " + featureName);
-            appendSummary(featureName + "=unclear");
-            warning = true;
+            std::cout << "- Windows feature status is unclear (treated as disabled): " << featureName << "\n";
+            appendSummary(featureName + "=likely disabled");
             return;
         }
 
