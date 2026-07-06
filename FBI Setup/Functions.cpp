@@ -303,7 +303,7 @@ void Helper::initLogging()
 {
     wchar_t tempPath[MAX_PATH];
     GetTempPathW(MAX_PATH, tempPath);
-    std::wstring dir = std::wstring(tempPath) + L"FBI-Setup";
+    std::wstring dir = std::wstring(tempPath) + L"CL-Setup";
     CreateDirectoryW(dir.c_str(), NULL);
 
     auto now = std::chrono::system_clock::now();
@@ -410,7 +410,7 @@ ServiceStatus Helper::getServiceStatus(LPCSTR serviceName)
 
 void Helper::setupConsole()
 {
-    SetConsoleTitleA("FBI-Setup");
+    SetConsoleTitleA("CL-Setup");
     HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
     DWORD mode = 0;
     if (GetConsoleMode(hConsole, &mode)) {
@@ -500,7 +500,7 @@ void Checks::createRestorePoint()
     rpi.dwEventType = BEGIN_SYSTEM_CHANGE;
     rpi.dwRestorePtType = MODIFY_SETTINGS;
     rpi.llSequenceNumber = 0;
-    std::wstring desc = L"FBI-Setup v" + std::wstring(Helper::g_appVersion.begin(), Helper::g_appVersion.end());
+    std::wstring desc = L"CL-Setup v" + std::wstring(Helper::g_appVersion.begin(), Helper::g_appVersion.end());
     wcsncpy_s(rpi.szDescription, MAX_PATH, desc.c_str(), _TRUNCATE);
     STATEMGRSTATUS sms;
     if (pSR(&rpi, &sms)) {
@@ -517,7 +517,7 @@ void Checks::backupRegistryKey(const std::string& key, const std::string& label)
 {
     wchar_t tempPath[MAX_PATH];
     GetTempPathW(MAX_PATH, tempPath);
-    std::wstring backupDir = std::wstring(tempPath) + L"FBI-Setup\\backups\\";
+    std::wstring backupDir = std::wstring(tempPath) + L"CL-Setup\\backups\\";
     CreateDirectoryW(backupDir.c_str(), NULL);
 
     auto now = std::chrono::system_clock::now();
@@ -530,7 +530,7 @@ void Checks::backupRegistryKey(const std::string& key, const std::string& label)
 
     std::string filename = backupDir.begin() != backupDir.end()
         ? std::string(backupDir.begin(), backupDir.end()) + label + "_" + timestamp + ".reg"
-        : std::string("C:\\Windows\\Temp\\FBI-Setup\\backups\\") + label + "_" + timestamp + ".reg";
+        : std::string("C:\\Windows\\Temp\\CL-Setup\\backups\\") + label + "_" + timestamp + ".reg";
 
     // Convert to ANSI path for reg.exe
     std::string cmd = "reg export \"" + key + "\" \"" + filename + "\" /y >nul 2>&1";
@@ -550,8 +550,6 @@ void Checks::checkWindowsDefender()
     SetConsoleTitleA("Checking Windows Defender");
 
     if (checkDefenderTamperProtection()) {
-        Helper::printError("- Windows Defender cannot be disabled (Tamper Protection prevents changes)");
-        Helper::recordResult("Windows Defender", "FAIL", "Tamper protection enabled");
         return;
     }
 
@@ -841,7 +839,9 @@ void Checks::checkCPUV()
         return;
     }
 
-    if (result.find("True") != std::string::npos) {
+    std::string lowerResult = result;
+    std::transform(lowerResult.begin(), lowerResult.end(), lowerResult.begin(), ::tolower);
+    if (lowerResult.find("true") != std::string::npos) {
         Helper::printError("- CPU-V is enabled in BIOS, please disable in BIOS");
         Helper::recordResult("CPU-V", "FAIL", "Enabled in BIOS");
         return;
@@ -877,6 +877,12 @@ void Checks::checkRiotVanguard()
         if (result == ERROR_SUCCESS && strcmp(displayName, "Riot Vanguard") == 0) {
             RegCloseKey(hSubkey);
             RegCloseKey(hKey);
+            if (!std::filesystem::exists("C:\\Program Files\\Riot Vanguard\\installer.exe") &&
+                !std::filesystem::exists("C:\\Program Files (x86)\\Riot Vanguard\\installer.exe")) {
+                Helper::printError("- Failed to uninstall Riot Vanguard, manually uninstall (Error 8)");
+                Helper::recordResult("Riot Vanguard", "FAIL", "Installed - manual uninstall needed");
+                return;
+            }
             if (!Helper::requestChange("Uninstall Riot Vanguard")) {
                 Helper::recordResult("Riot Vanguard", "WARN", "Installed - uninstall pending approval");
                 return;
@@ -1381,11 +1387,40 @@ void Checks::checkModifiedOS()
     checkService("BFE", "BFE");
     checkService("mpssvc", "Firewall");
 
-    HKEY hKey;
-    if (RegOpenKeyEx(HKEY_LOCAL_MACHINE, "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System", 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
-        char val[64] = ""; DWORD sz = sizeof(val);
-        if (RegQueryValueEx(hKey, "ConsentPromptBehaviorAdmin", NULL, NULL, (LPBYTE)val, &sz) == ERROR_SUCCESS) {
-            if (val[0] == 0) { modified = true; reasons += " UAC disabled;"; }
+    const char* customKeys[] = {
+        "SOFTWARE\\AtlasOS", "SOFTWARE\\ReviOS", "SOFTWARE\\GhostSpectre",
+        "SOFTWARE\\GGOS", "SOFTWARE\\PhoenixOS", "SOFTWARE\\KernelOS",
+        "SOFTWARE\\XOS", "SOFTWARE\\OptimusOS"
+    };
+    for (auto& key : customKeys) {
+        HKEY hk;
+        if (RegOpenKeyEx(HKEY_LOCAL_MACHINE, key, 0, KEY_READ, &hk) == ERROR_SUCCESS) {
+            modified = true;
+            std::string name = key;
+            name = name.substr(name.rfind('\\') + 1);
+            reasons += " " + name + ";";
+            RegCloseKey(hk);
+        }
+    }
+
+    char productName[256] = ""; DWORD size = sizeof(productName); HKEY hKey;
+    if (RegOpenKeyEx(HKEY_LOCAL_MACHINE, "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion", 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
+        RegQueryValueEx(hKey, "ProductName", NULL, NULL, (LPBYTE)productName, &size);
+        RegCloseKey(hKey);
+    }
+    std::string pn(productName);
+    const char* markers[] = {"Atlas","Revi","Ghost","Spectre","Tiny","Lite","X-Lite","Micro","XOS","Optimus","SuperLite","Compact","Minimal","Gaming"};
+    for (auto& m : markers) {
+        if (pn.find(m) != std::string::npos) { modified = true; reasons += std::string(" ProductName(") + m + ");"; break; }
+    }
+
+    char editionID[256] = ""; DWORD edSize = sizeof(editionID);
+    if (RegOpenKeyEx(HKEY_LOCAL_MACHINE, "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion", 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
+        if (RegQueryValueEx(hKey, "EditionID", NULL, NULL, (LPBYTE)editionID, &edSize) == ERROR_SUCCESS) {
+            std::string ed(editionID);
+            if (ed.find("Custom") != std::string::npos || ed.find("Gaming") != std::string::npos) {
+                modified = true; reasons += " Edition(" + ed + ");";
+            }
         }
         RegCloseKey(hKey);
     }
@@ -1421,29 +1456,41 @@ void Checks::checkTPMStatus()
 void Checks::checkCoreIsolation()
 {
     SetConsoleTitleA("Checking Core Isolation");
-    DWORD hypervisorEnabled = 0;
+    DWORD hvci = 0;
     Helper::readDwordValueRegistry(HKEY_LOCAL_MACHINE,
-        "SYSTEM\\CurrentControlSet\\Control\\DeviceGuard", "EnableVirtualizationBasedSecurity", &hypervisorEnabled);
+        "SYSTEM\\CurrentControlSet\\Control\\DeviceGuard\\Scenarios\\HypervisorEnforcedCodeIntegrity", "Enabled", &hvci);
 
-    if (hypervisorEnabled == 0) {
-        Helper::printSuccess("- Core Isolation (VBS) is disabled", false);
+    DWORD vbs = 0;
+    Helper::readDwordValueRegistry(HKEY_LOCAL_MACHINE,
+        "SYSTEM\\CurrentControlSet\\Control\\DeviceGuard", "EnableVirtualizationBasedSecurity", &vbs);
+
+    DWORD dmaState = 0;
+    Helper::readDwordValueRegistry(HKEY_LOCAL_MACHINE,
+        "SYSTEM\\CurrentControlSet\\Control\\DeviceGuard\\Scenarios\\KernelDmaProtection", "Enabled", &dmaState);
+
+    if (vbs == 0 && hvci == 0 && dmaState == 0) {
+        Helper::printSuccess("- Core Isolation (VBS/HVCI) is disabled", false);
         Helper::recordResult("Core Isolation", "OK", "Disabled");
         return;
     }
 
-    if (!Helper::requestChange("Disable Core Isolation (VBS)")) {
+    if (!Helper::requestChange("Disable Core Isolation (VBS/HVCI/DMA)")) {
         Helper::recordResult("Core Isolation", "WARN", "Enabled - disable pending approval");
         return;
     }
 
-    HKEY hKey;
-    DWORD val = 0;
+    HKEY hKey; DWORD val = 0;
     RegCreateKeyEx(HKEY_LOCAL_MACHINE, "SYSTEM\\CurrentControlSet\\Control\\DeviceGuard",
         0, NULL, REG_OPTION_NON_VOLATILE, KEY_WRITE, NULL, &hKey, NULL);
     RegSetValueEx(hKey, "EnableVirtualizationBasedSecurity", 0, REG_DWORD, (BYTE*)&val, sizeof(val));
     RegCloseKey(hKey);
 
     RegCreateKeyEx(HKEY_LOCAL_MACHINE, "SYSTEM\\CurrentControlSet\\Control\\DeviceGuard\\Scenarios\\HypervisorEnforcedCodeIntegrity",
+        0, NULL, REG_OPTION_NON_VOLATILE, KEY_WRITE, NULL, &hKey, NULL);
+    RegSetValueEx(hKey, "Enabled", 0, REG_DWORD, (BYTE*)&val, sizeof(val));
+    RegCloseKey(hKey);
+
+    RegCreateKeyEx(HKEY_LOCAL_MACHINE, "SYSTEM\\CurrentControlSet\\Control\\DeviceGuard\\Scenarios\\KernelDmaProtection",
         0, NULL, REG_OPTION_NON_VOLATILE, KEY_WRITE, NULL, &hKey, NULL);
     RegSetValueEx(hKey, "Enabled", 0, REG_DWORD, (BYTE*)&val, sizeof(val));
     RegCloseKey(hKey);
@@ -1456,19 +1503,21 @@ void Checks::checkCoreIsolation()
 void Checks::checkDMAProtection()
 {
     SetConsoleTitleA("Checking DMA Protection");
-    DWORD dmaStatus = 0;
-    if (Helper::readDwordValueRegistry(HKEY_LOCAL_MACHINE,
-        "SYSTEM\\CurrentControlSet\\Control\\Kernel DMA Protection", "Device Protection Supported", &dmaStatus)) {
-        if (dmaStatus > 0) {
-            Helper::printConcern("- Kernel DMA Protection is active");
-            Helper::recordResult("DMA Protection", "WARN", "Active");
-        } else {
-            Helper::printSuccess("- Kernel DMA Protection is not active", false);
-            Helper::recordResult("DMA Protection", "OK", "Not active");
-        }
-    } else {
+    DWORD dmaEnabled = 0;
+    bool found = Helper::readDwordValueRegistry(HKEY_LOCAL_MACHINE,
+        "SYSTEM\\CurrentControlSet\\Control\\DeviceGuard\\Scenarios\\KernelDmaProtection", "Enabled", &dmaEnabled);
+    if (!found) {
+        DWORD dmaState = 0;
+        found = Helper::readDwordValueRegistry(HKEY_LOCAL_MACHINE,
+            "SYSTEM\\CurrentControlSet\\Control\\DeviceGuard", "KernelDmaProtectionState", &dmaState);
+        if (found && dmaState != 0) dmaEnabled = 1;
+    }
+    if (!found || dmaEnabled == 0) {
         Helper::printSuccess("- Kernel DMA Protection not found", false);
         Helper::recordResult("DMA Protection", "OK", "Not present");
+    } else {
+        Helper::printConcern("- Kernel DMA Protection is active");
+        Helper::recordResult("DMA Protection", "WARN", "Active");
     }
 }
 
@@ -1725,14 +1774,16 @@ void Checks::checkSecurityMitigations()
         }
 
         if (output.find("state : disabled") != std::string::npos ||
-            output.find("state: disabled") != std::string::npos) {
+            output.find("state: disabled") != std::string::npos ||
+            output.find("deaktiviert") != std::string::npos) {
             Helper::printSuccess("- Windows feature is already disabled: " + featureName, false);
             appendSummary(featureName + "=disabled");
             return;
         }
 
         if (output.find("state : enabled") == std::string::npos &&
-            output.find("state: enabled") == std::string::npos) {
+            output.find("state: enabled") == std::string::npos &&
+            output.find("aktiviert") == std::string::npos) {
             Helper::printConcern("- Windows feature status is unclear: " + featureName);
             appendSummary(featureName + "=unclear");
             warning = true;
@@ -1821,7 +1872,7 @@ void Checks::checkForUpdate()
             basePath = tempPath;
         }
 
-        std::string dir = basePath + "\\FBI-Setup";
+        std::string dir = basePath + "\\CL-Setup";
         CreateDirectoryA(dir.c_str(), NULL);
         return dir + "\\update-check.txt";
     };
