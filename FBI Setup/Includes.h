@@ -18,6 +18,7 @@
 #include <mutex>
 #include <functional>
 #include <future>
+#include <iphlpapi.h>
 #include <srrestoreptapi.h>
 #include "Functions.h"
 

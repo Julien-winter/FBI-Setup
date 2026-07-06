@@ -1,13 +1,3 @@
-// Original creator: Coby (coby69) - thanks Kali for the read DWORD function
-// Bug fixes and improvements by: Julien-winter
-// This version was made on 17/08/2023 (DD/MM/YYYY).
-// This is an open-source project and any and all code can be modified at any point in time.
-
-// Copyright 2023 CheatLoverz.store
-//
-// This code is released under the GNU General Public License (GPL).
-// See https://www.gnu.org/licenses/gpl-3.0.txt for more information.
-
 #include "Includes.h"
 
 int main(int argc, char* argv[])
@@ -45,8 +35,8 @@ int main(int argc, char* argv[])
         Sleep(1500);
     }
 
-    // Phase 1: Check only, no writes
-    Helper::applyChanges = false;
+    int warningCount = 0;
+    int failedCount = 0;
 
     std::vector<std::thread> parallelChecks;
 
@@ -74,16 +64,27 @@ int main(int argc, char* argv[])
     if (!Helper::isCheckSkipped(4)) Checks::checkCPUV();
     else { Helper::printConcern("- Skipped: CPU-V"); Helper::recordResult("CPU-V", "SKIPPED", ""); }
 
-    if (!Helper::isCheckSkipped(5)) Checks::checkRiotVanguard();
+    if (!Helper::isCheckSkipped(5)) Checks::uninstallRiotVanguard();
     else { Helper::printConcern("- Skipped: Riot Vanguard"); Helper::recordResult("Riot Vanguard", "SKIPPED", ""); }
 
-    if (!Helper::isCheckSkipped(6)) Checks::checkVCRedist();
+    if (!Helper::isCheckSkipped(6)) {
+        std::thread vcThread(Checks::installVCRedist);
+        while (Helper::vcComplete == false) {
+            Sleep(10);
+            Helper::vcCheckSleepTimes = Helper::vcCheckSleepTimes + 10;
+            if (Helper::vcCheckSleepTimes >= 30000) {
+                Helper::printConcern("- VCRedist is taking too long, continuing without waiting");
+                break;
+            }
+        }
+        vcThread.detach();
+    }
     else { Helper::printConcern("- Skipped: VCRedist"); Helper::recordResult("VC Redist", "SKIPPED", ""); }
 
     if (!Helper::isCheckSkipped(8)) Checks::disableChromeProtection();
     else { Helper::printConcern("- Skipped: Chrome Protection"); Helper::recordResult("Chrome Protection", "SKIPPED", ""); }
 
-    if (!Helper::isCheckSkipped(9)) Checks::checkTimeSync();
+    if (!Helper::isCheckSkipped(9)) Checks::syncWindowsTime();
     else { Helper::printConcern("- Skipped: Time Sync"); Helper::recordResult("Time Sync", "SKIPPED", ""); }
 
     Color::setForegroundColor(Color::LightGray);
@@ -96,7 +97,7 @@ int main(int argc, char* argv[])
     if (!Helper::isCheckSkipped(10)) Checks::checkWinver();
     else { Helper::printConcern("- Skipped: Winver"); Helper::recordResult("Winver", "SKIPPED", ""); }
 
-    if (!Helper::isCheckSkipped(11)) Checks::checkSymbols();
+    if (!Helper::isCheckSkipped(11)) Checks::deleteSymbols();
     else { Helper::printConcern("- Skipped: Symbols"); Helper::recordResult("Symbols", "SKIPPED", ""); }
 
     if (!Helper::isCheckSkipped(12)) Checks::checkFastBoot();
@@ -147,54 +148,38 @@ int main(int argc, char* argv[])
     if (!Helper::isCheckSkipped(26)) Checks::checkWindowsUpdate();
     else { Helper::printConcern("- Skipped: Windows Update"); Helper::recordResult("Windows Update", "SKIPPED", ""); }
 
-    Color::setForegroundColor(Color::LightGray);
-    std::cout << "-----------------------------------------------------------------\n";
-    Color::setForegroundColor(Color::Cyan);
-    std::cout << "Initial checks completed. No changes have been applied yet.\n";
-
-    bool changesApplied = false;
+    // Count warnings and failures
+    for (const auto& r : Helper::g_results) {
+        if (r.status == "WARN") warningCount++;
+        if (r.status == "FAIL") failedCount++;
+    }
 
     if (Helper::hasPendingChanges()) {
         Color::setForegroundColor(Color::LightGray);
         std::cout << "-----------------------------------------------------------------\n";
+        Color::setForegroundColor(Color::Cyan);
+        std::cout << "Initial checks completed. No changes have been applied yet.\n";
+        Color::setForegroundColor(Color::LightGray);
 
         bool approved = Helper::cliConfig.autoApply || Helper::promptApplyChanges();
         if (approved) {
-            Color::setForegroundColor(Color::Cyan);
-            std::cout << "\nCreating restore point and backing up registry...\n";
-            Color::setForegroundColor(Color::LightGray);
-            Checks::createRestorePoint();
-            Checks::backupRegistryKey("HKEY_LOCAL_MACHINE\\SOFTWARE\\Policies\\Microsoft\\Windows Defender", "DefenderPolicies");
-            Checks::backupRegistryKey("HKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Control\\DeviceGuard", "DeviceGuard");
-            Checks::backupRegistryKey("HKEY_LOCAL_MACHINE\\SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsUpdate", "WindowsUpdate");
-
             Helper::applyChanges = true;
             Helper::clearPendingChanges();
             Helper::clearResults();
-            changesApplied = true;
+            Helper::vcComplete = false;
+            Helper::vcCheckSleepTimes = 0;
 
             Color::setForegroundColor(Color::Cyan);
             std::cout << "\nApplying approved changes...\n";
             Color::setForegroundColor(Color::LightGray);
             std::cout << "-----------------------------------------------------------------\n";
 
-            // Phase 2: Apply changes
-            std::vector<std::thread> applyParallel;
-            if (!Helper::isCheckSkipped(1)) {
-                applyParallel.emplace_back([]() { Checks::checkWindowsDefender(); });
-            }
-            if (!Helper::isCheckSkipped(2)) {
-                applyParallel.emplace_back([]() { Checks::check3rdPartyAntiVirus(); });
-            }
-            if (!Helper::isCheckSkipped(7)) {
-                applyParallel.emplace_back([]() { Checks::isChromeInstalled(); });
-            }
-            for (auto& t : applyParallel) t.join();
-            applyParallel.clear();
-
+            if (!Helper::isCheckSkipped(1)) Checks::checkWindowsDefender();
+            if (!Helper::isCheckSkipped(2)) Checks::check3rdPartyAntiVirus();
             if (!Helper::isCheckSkipped(4)) Checks::checkCPUV();
-            if (!Helper::isCheckSkipped(5)) Checks::checkRiotVanguard();
+            if (!Helper::isCheckSkipped(5)) Checks::uninstallRiotVanguard();
             if (!Helper::isCheckSkipped(6)) Checks::installVCRedist();
+            if (!Helper::isCheckSkipped(7)) Checks::isChromeInstalled();
             if (!Helper::isCheckSkipped(8)) Checks::disableChromeProtection();
             if (!Helper::isCheckSkipped(9)) Checks::syncWindowsTime();
             if (!Helper::isCheckSkipped(11)) Checks::deleteSymbols();
@@ -205,8 +190,14 @@ int main(int argc, char* argv[])
             if (!Helper::isCheckSkipped(17)) Checks::checkCoreIsolation();
             if (!Helper::isCheckSkipped(20)) Checks::checkInternet();
             if (!Helper::isCheckSkipped(24)) Checks::checkSecurityMitigations();
-            if (!Helper::isCheckSkipped(25)) Checks::checkUAC();
-            if (!Helper::isCheckSkipped(26)) Checks::checkWindowsUpdate();
+
+            // Re-count after applying changes
+            warningCount = 0;
+            failedCount = 0;
+            for (const auto& r : Helper::g_results) {
+                if (r.status == "WARN") warningCount++;
+                if (r.status == "FAIL") failedCount++;
+            }
         }
         else {
             Helper::printConcern("- User declined changes. Leaving system unchanged.");
@@ -215,14 +206,6 @@ int main(int argc, char* argv[])
 
     Color::setForegroundColor(Color::LightGray);
     std::cout << "-----------------------------------------------------------------\n";
-
-    int warningsCount = 0;
-    int failuresCount = 0;
-    for (auto& r : Helper::g_results) {
-        if (r.status == "WARN") warningsCount++;
-        else if (r.status == "FAIL") failuresCount++;
-    }
-
     Color::setForegroundColor(Color::Cyan);
     std::cout << "Successfully ran all checks, feel free to close the application\n";
     Color::setForegroundColor(Color::Green);
@@ -231,13 +214,14 @@ int main(int argc, char* argv[])
         Color::setForegroundColor(Color::Red);
         std::cout << "\n(Restart required to apply all changes)";
     }
-    if (failuresCount > 0) {
-        Color::setForegroundColor(Color::Red);
-        std::cout << "\n(" << failuresCount << " failures found)";
-    }
-    if (warningsCount > 0) {
+
+    if (warningCount > 0) {
         Color::setForegroundColor(Color::Yellow);
-        std::cout << "\n(" << warningsCount << " warnings)";
+        std::cout << "\n(" << warningCount << " warning" << (warningCount != 1 ? "s" : "") << ")";
+    }
+    if (failedCount > 0) {
+        Color::setForegroundColor(Color::Red);
+        std::cout << "\n(" << failedCount << " error" << (failedCount != 1 ? "s" : "") << ")";
     }
 
     std::cout << "\n";
@@ -250,12 +234,10 @@ int main(int argc, char* argv[])
     Helper::closeLogging();
 
     if (!Helper::cliConfig.headless) {
-        std::cout << "Press any key to exit...";
+        std::cout << "\nPress any key to exit...";
         std::cin.get();
     }
 
-    if (failuresCount > 0) return 2;
-    if (warningsCount > 0) return 1;
-    return 0;
+    Helper::g_exitCode = (failedCount > 0) ? 1 : (warningCount > 0 ? 2 : 0);
+    return Helper::g_exitCode;
 }
-

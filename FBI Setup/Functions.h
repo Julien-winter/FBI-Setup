@@ -19,36 +19,55 @@ enum ServiceStatus
 };
 
 enum class ErrorCode {
-    E01_Defender_SCM = 1, E02_Defender_Service = 2, E03_Defender_Query = 3,
-    E04_AV_WMIC = 4, E05_CPUV_WMIC = 5,
-    E06_Vanguard_RegOpen = 6, E07_Vanguard_RegEnum = 7, E08_Vanguard_Uninstall = 8,
-    E09_VCRedist_Download_x64 = 9, E10_VCRedist_Download_x86 = 10, E11_VCRedist_Verify = 11,
-    E12_SecureBoot_Read = 12, E13_Chrome_Check = 13,
-    E14_TimeSync_SCM = 14, E15_TimeSync_Service = 15, E16_TimeSync_Config = 16,
-    E17_TimeSync_Disabled = 17, E18_TimeSync_ChangeConfig = 18, E19_TimeSync_Start = 19,
-    E20_Chrome_RegWrite = 20, E21_Chrome_RegCreate = 21,
-    E22_Winver_Read = 22, E23_Winver_Unknown = 23, E24_Symbols_Delete = 24,
-    E25_Exploit_Write = 25, E26_Exploit_Open = 26,
-    E27_SmartScreen_Write = 27, E28_SmartScreen_Open = 28,
-    E29_Gamebar_Write = 29, E30_Gamebar_Open = 30,
-    E31_FastBoot_Write = 31, E32_FastBoot_Open = 32,
-    E33_Defender_Tamper = 33, E34_AV_Tamper = 34,
-    E35_UAC_RegOpen = 35, E36_WU_Service = 36,
+    E01_Defender_SCM = 1,
+    E02_Defender_Service = 2,
+    E03_Defender_Query = 3,
+    E04_AV_WMIC = 4,
+    E05_CPUV_WMIC = 5,
+    E06_Vanguard_RegOpen = 6,
+    E07_Vanguard_RegEnum = 7,
+    E08_Vanguard_Uninstall = 8,
+    E09_VCRedist_Download_x64 = 9,
+    E10_VCRedist_Download_x86 = 10,
+    E11_VCRedist_Verify = 11,
+    E12_SecureBoot_Read = 12,
+    E13_Chrome_Check = 13,
+    E14_TimeSync_SCM = 14,
+    E15_TimeSync_Service = 15,
+    E16_TimeSync_Config = 16,
+    E17_TimeSync_Disabled = 17,
+    E18_TimeSync_ChangeConfig = 18,
+    E19_TimeSync_Start = 19,
+    E20_Chrome_RegWrite = 20,
+    E21_Chrome_RegCreate = 21,
+    E22_Winver_Read = 22,
+    E23_Winver_Unknown = 23,
+    E24_Symbols_Delete = 24,
+    E25_Exploit_Write = 25,
+    E26_Exploit_Open = 26,
+    E27_SmartScreen_Write = 27,
+    E28_SmartScreen_Open = 28,
+    E29_Gamebar_Write = 29,
+    E30_Gamebar_Open = 30,
+    E31_FastBoot_Write = 31,
+    E32_FastBoot_Open = 32,
+    E33_Defender_Tamper = 33,
+    E34_AV_Tamper = 34,
 };
 
 struct CLIConfig {
     bool headless = false;
     bool quiet = false;
-    bool autoApply = false;
     std::vector<int> skipChecks;
     std::vector<int> onlyChecks;
     std::string exportPath;
     bool showHelp = false;
+    bool autoApply = false;
 };
 
 struct CheckResult {
     std::string check;
-    std::string status;
+    std::string status; // "OK", "FAIL", "WARN", "SKIPPED"
     std::string message;
 };
 
@@ -58,6 +77,7 @@ namespace Checks {
     void checkWindowsDefender();
     void check3rdPartyAntiVirus();
     void checkCPUV();
+    void uninstallRiotVanguard();
     void installVCRedist();
     void checkSecureBoot();
     void isChromeInstalled();
@@ -82,19 +102,11 @@ namespace Checks {
     void checkSecurityMitigations();
     void checkUAC();
     void checkWindowsUpdate();
-    void createRestorePoint();
-    void backupRegistryKey(const std::string& key, const std::string& label);
-    void uninstallRiotVanguard();
-    void checkRiotVanguard();
-    void checkVCRedist();
-    void checkTimeSync();
-    void checkSymbols();
 }
 namespace Helper {
     extern bool restartRequired;
     extern std::atomic<bool> vcComplete;
     extern int vcCheckSleepTimes;
-    extern bool applyChanges;
 
     extern std::mutex consoleMutex;
     extern std::mutex logMutex;
@@ -107,18 +119,22 @@ namespace Helper {
     extern std::mutex g_resultsMutex;
     extern std::vector<std::string> g_pendingChanges;
     extern std::mutex g_pendingChangesMutex;
+    extern bool applyChanges;
     extern std::string g_repoUrl;
     extern std::string g_appName;
     extern std::string g_appVersion;
+    extern int g_exitCode;
 
     void setupConsole();
     void printSuccess(const std::string& message, bool changed);
     void printConcern(const std::string& message);
     void printError(const std::string& message);
+    void printInfo(const std::string& message);
     void runSystemCommand(const char* command);
     std::string runSystemCommandWithOutput(const char* command, DWORD timeoutMs);
     bool readDwordValueRegistry(HKEY hKeyParent, LPCSTR subkey, LPCSTR valueName, DWORD* readData);
     ServiceStatus getServiceStatus(LPCSTR serviceName);
+    void backupRegistryKey(HKEY hKeyParent, const std::string& subkey);
 
     bool isAdmin();
     void initLogging();
@@ -132,9 +148,9 @@ namespace Helper {
     bool hasPendingChanges();
     void printPendingChanges();
     bool promptApplyChanges();
+    void clearResults();
 
     void recordResult(const std::string& check, const std::string& status, const std::string& message);
-    void clearResults();
     void exportResultsJSON();
     std::string escapeJSON(const std::string& s);
     std::string getTimestampISO();
