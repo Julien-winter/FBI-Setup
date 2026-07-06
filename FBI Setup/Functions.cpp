@@ -1134,34 +1134,61 @@ void Checks::checkWinver()
     HKEY hKey;
     if (RegOpenKeyEx(HKEY_LOCAL_MACHINE, "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion", 0, KEY_READ, &hKey) != ERROR_SUCCESS) {
         Helper::printError("- Failed to check Winver (Error 22)");
+        Helper::recordResult("Winver", "FAIL", "Registry open failed");
+        return;
+    }
+    char buildStr[32]; DWORD buildSize = sizeof(buildStr);
+    LONG ret = RegQueryValueEx(hKey, "CurrentBuild", NULL, NULL, (LPBYTE)buildStr, &buildSize);
+    RegCloseKey(hKey);
+    if (ret != ERROR_SUCCESS) {
+        Helper::printError("- Failed to check Winver (Error 22)");
         Helper::recordResult("Winver", "FAIL", "Read failed");
         return;
     }
-
-    char value[64]; DWORD size = sizeof(value);
-    LONG result = RegQueryValueEx(hKey, "CurrentBuild", NULL, NULL, (LPBYTE)value, &size);
-    RegCloseKey(hKey);
-
-    if (result != ERROR_SUCCESS) {
-        Helper::printError("- Failed to check Winver (Error 23)");
-        Helper::recordResult("Winver", "FAIL", "Read CurrentBuild failed");
-        return;
-    }
-
     int build = 0;
-    try { build = std::stoi(std::string(value, size - 1)); }
-    catch (...) {
-        Helper::printError("- Failed to check Winver (Error 24)");
-        Helper::recordResult("Winver", "FAIL", "Parse failed");
+    try {
+        build = std::stoi(buildStr);
+    } catch (...) {
+        Helper::printError("- Failed to parse Winver build number (Error 22)");
+        Helper::recordResult("Winver", "FAIL", "Parse failed: " + std::string(buildStr));
         return;
     }
 
-    if (build < 22000) {
-        Helper::printError("- Winver (build " + std::to_string(build) + ") is not supported. Minimum: 22000 (Win11)");
-        Helper::recordResult("Winver", "FAIL", "Build " + std::to_string(build) + " unsupported");
+    char productName[128] = ""; DWORD productSize = sizeof(productName);
+    if (RegOpenKeyEx(HKEY_LOCAL_MACHINE, "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion", 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
+        RegQueryValueEx(hKey, "ProductName", NULL, NULL, (LPBYTE)productName, &productSize);
+        RegCloseKey(hKey);
+    }
+    std::string winver(productName);
+
+    struct BuildInfo { int build; std::string name; };
+    BuildInfo buildMap[] = {
+        {10240, "Win10 1507"}, {10586, "Win10 1511"}, {14393, "Win10 1607"}, {15063, "Win10 1703"},
+        {16299, "Win10 1709"}, {17134, "Win10 1803"}, {17763, "Win10 1809"}, {18362, "Win10 1903"},
+        {19041, "Win10 2004"}, {19042, "Win10 20H2"}, {19043, "Win10 21H1"}, {19044, "Win10 21H2"},
+        {19045, "Win10 22H2"}, {22000, "Win11 21H2"}, {22621, "Win11 22H2"}, {22631, "Win11 23H2"},
+        {26100, "Win11 24H2"},
+    };
+    int minBuild = 19041;
+    int troubleBuilds[] = {19045, 22621};
+
+    for (auto& entry : buildMap) {
+        if (entry.build == build) { winver = entry.name; break; }
+    }
+
+    if (build < minBuild) {
+        Helper::printError("- Winver \"" + winver + "\" is unsupported, please upgrade");
+        Helper::recordResult("Winver", "FAIL", "Unsupported: " + winver + " (Build " + std::to_string(build) + ")");
     } else {
-        Helper::printSuccess("- Winver (build " + std::to_string(build) + ") is supported", false);
-        Helper::recordResult("Winver", "OK", "Build " + std::to_string(build));
+        bool isTrouble = false;
+        for (int tb : troubleBuilds) { if (tb == build) { isTrouble = true; break; } }
+        if (isTrouble) {
+            Helper::printConcern("- Winver \"" + winver + "\" is a 50/50, if error contact support");
+            Helper::recordResult("Winver", "WARN", "Troublesome: " + winver);
+        } else {
+            Helper::printSuccess("- Winver is supported (" + winver + ")", false);
+            Helper::recordResult("Winver", "OK", winver);
+        }
     }
 }
 
