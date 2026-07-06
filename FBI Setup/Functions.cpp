@@ -842,8 +842,8 @@ void Checks::checkCPUV()
     std::string lowerResult = result;
     std::transform(lowerResult.begin(), lowerResult.end(), lowerResult.begin(), ::tolower);
     if (lowerResult.find("true") != std::string::npos) {
-        Helper::printError("- CPU-V is enabled in BIOS, please disable in BIOS");
-        Helper::recordResult("CPU-V", "FAIL", "Enabled in BIOS");
+        Helper::printConcern("- CPU-V is enabled in BIOS. Consider disabling in BIOS if not needed");
+        Helper::recordResult("CPU-V", "WARN", "Enabled in BIOS");
         return;
     }
 
@@ -1640,7 +1640,8 @@ void Checks::checkNetworkAdapters()
             Helper::printSuccess("- Adapter: " + line, false);
         }
         else {
-            Helper::printConcern("- Adapter: " + line);
+            Color::setForegroundColor(Color::LightGray);
+            std::cout << "  Adapter: " << line << "\n";
         }
 
         if (!summary.empty()) summary += "; ";
