@@ -713,7 +713,7 @@ void Checks::check3rdPartyAntiVirus()
         return result;
     };
 
-    std::string wmiOutput = runWMIC("WMIC /Node:localhost /Namespace:\\\\root\\SecurityCenter2 Path AntiVirusProduct Get displayName /Format:List");
+    std::string wmiOutput = runWMIC("WMIC /Node:localhost /Namespace:\\\\root\\SecurityCenter2 Path AntiVirusProduct Get displayName /Format:List 2>nul");
     if (wmiOutput == "ERROR") {
         Helper::printConcern("- WMIC not available - possible modified OS");
         Helper::recordResult("3rd Party AV", "WARN", "WMIC not available");
@@ -834,7 +834,7 @@ void Checks::checkCPUV()
         return result;
     };
 
-    std::string result = runWMIC("WMIC CPU Get VirtualizationFirmwareEnabled");
+    std::string result = runWMIC("WMIC CPU Get VirtualizationFirmwareEnabled 2>nul");
     if (result == "ERROR") {
         Helper::printConcern("- WMIC not available - possible modified OS");
         Helper::recordResult("CPU-V", "WARN", "WMIC not available");
@@ -1401,19 +1401,20 @@ void Checks::checkModifiedOS()
 
 void Checks::checkTPMStatus()
 {
-    SetConsoleTitleA("Checking TPM Status");
-    std::string wmicResult = Helper::runSystemCommandWithOutput(
-        "wmic /namespace:\\\\root\\cimv2\\security\\microsofttpm path win32_tpm get IsActivated_InitialValue /format:value",
-        10000);
-    if (wmicResult.find("IsActivated_InitialValue=1") != std::string::npos) {
-        Helper::printConcern("- TPM is activated");
-        Helper::recordResult("TPM", "WARN", "Activated");
-    } else if (wmicResult.find("IsActivated_InitialValue=0") != std::string::npos) {
-        Helper::printSuccess("- TPM is not activated", false);
-        Helper::recordResult("TPM", "OK", "Not activated");
+    SetConsoleTitleA("Checking TPM");
+    DWORD tpmActive = 0; bool found = false;
+    HKEY hKey;
+    if (RegOpenKeyEx(HKEY_LOCAL_MACHINE, "SYSTEM\\CurrentControlSet\\Control\\TPM", 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
+        DWORD size = sizeof(DWORD);
+        if (RegQueryValueEx(hKey, "TPMActive", NULL, NULL, (LPBYTE)&tpmActive, &size) == ERROR_SUCCESS) found = true;
+        RegCloseKey(hKey);
+    }
+    if (!found || tpmActive == 0) {
+        Helper::printSuccess("- TPM is disabled / not found", false);
+        Helper::recordResult("TPM", "OK", "Disabled/not found");
     } else {
-        Helper::printSuccess("- TPM not found", false);
-        Helper::recordResult("TPM", "OK", "Not present");
+        Helper::printError("- TPM is enabled, please disable TPM in BIOS");
+        Helper::recordResult("TPM", "FAIL", "Enabled");
     }
 }
 
