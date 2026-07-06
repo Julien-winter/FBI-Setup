@@ -1157,10 +1157,10 @@ void Checks::checkWinver()
     }
 
     if (build < 22000) {
-        Helper::printError("- Windows build " + std::to_string(build) + " is not supported. Minimum: 22000 (Win11)");
+        Helper::printError("- Winver (build " + std::to_string(build) + ") is not supported. Minimum: 22000 (Win11)");
         Helper::recordResult("Winver", "FAIL", "Build " + std::to_string(build) + " unsupported");
     } else {
-        Helper::printSuccess("- Windows build " + std::to_string(build) + " is supported", false);
+        Helper::printSuccess("- Winver (build " + std::to_string(build) + ") is supported", false);
         Helper::recordResult("Winver", "OK", "Build " + std::to_string(build));
     }
 }
@@ -1375,16 +1375,15 @@ void Checks::checkModifiedOS()
 void Checks::checkTPMStatus()
 {
     SetConsoleTitleA("Checking TPM Status");
-    DWORD tpmOk = 0;
-    if (Helper::readDwordValueRegistry(HKEY_LOCAL_MACHINE,
-        "SYSTEM\\CurrentControlSet\\Services\\TPM\\WMI", "IsActivated_InitialValue", &tpmOk)) {
-        if (tpmOk == 1) {
-            Helper::printConcern("- TPM is activated");
-            Helper::recordResult("TPM", "WARN", "Activated");
-        } else {
-            Helper::printSuccess("- TPM is not activated", false);
-            Helper::recordResult("TPM", "OK", "Not activated");
-        }
+    std::string wmicResult = Helper::runSystemCommandWithOutput(
+        "wmic /namespace:\\\\root\\cimv2\\security\\microsofttpm path win32_tpm get IsActivated_InitialValue /format:value",
+        10000);
+    if (wmicResult.find("IsActivated_InitialValue=1") != std::string::npos) {
+        Helper::printConcern("- TPM is activated");
+        Helper::recordResult("TPM", "WARN", "Activated");
+    } else if (wmicResult.find("IsActivated_InitialValue=0") != std::string::npos) {
+        Helper::printSuccess("- TPM is not activated", false);
+        Helper::recordResult("TPM", "OK", "Not activated");
     } else {
         Helper::printSuccess("- TPM not found", false);
         Helper::recordResult("TPM", "OK", "Not present");
