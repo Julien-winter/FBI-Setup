@@ -76,7 +76,6 @@ namespace Checks {
     bool checkAVTamperProtection(const std::string& avName);
     void checkWindowsDefender();
     void check3rdPartyAntiVirus();
-    void checkCPUV();
     void uninstallRiotVanguard();
     void installVCRedist();
     void checkSecureBoot();
