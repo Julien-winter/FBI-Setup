@@ -1,6 +1,8 @@
 #pragma once
+#include <winsock2.h>
 #include <Windows.h>
 #include <winhttp.h>
+#include <iphlpapi.h>
 #include <iostream>
 #include <filesystem>
 #include <map>
@@ -16,10 +18,9 @@
 #include <mutex>
 #include <functional>
 #include <future>
-#include <winsvc.h>
-#include <urlmon.h>
 #include <srrestoreptapi.h>
 #include "Functions.h"
 
 #pragma comment(lib, "urlmon.lib")
 #pragma comment(lib, "winhttp.lib")
+#pragma comment(lib, "iphlpapi.lib")

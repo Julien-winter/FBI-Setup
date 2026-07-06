@@ -20,23 +20,26 @@ enum ServiceStatus
 
 enum class ErrorCode {
     E01_Defender_SCM = 1, E02_Defender_Service = 2, E03_Defender_Query = 3,
-    E04_AV_WMIC = 4, E05_CPUV_WMIC = 5, E06_Vanguard_RegOpen = 6, E07_Vanguard_RegEnum = 7,
-    E08_Vanguard_Uninstall = 8, E09_VCRedist_Download_x64 = 9, E10_VCRedist_Download_x86 = 10,
-    E11_VCRedist_Verify = 11, E12_SecureBoot_Read = 12, E13_Chrome_Check = 13,
+    E04_AV_WMIC = 4, E05_CPUV_WMIC = 5,
+    E06_Vanguard_RegOpen = 6, E07_Vanguard_RegEnum = 7, E08_Vanguard_Uninstall = 8,
+    E09_VCRedist_Download_x64 = 9, E10_VCRedist_Download_x86 = 10, E11_VCRedist_Verify = 11,
+    E12_SecureBoot_Read = 12, E13_Chrome_Check = 13,
     E14_TimeSync_SCM = 14, E15_TimeSync_Service = 15, E16_TimeSync_Config = 16,
     E17_TimeSync_Disabled = 17, E18_TimeSync_ChangeConfig = 18, E19_TimeSync_Start = 19,
-    E20_Chrome_RegWrite = 20, E21_Chrome_RegCreate = 21, E22_Winver_Read = 22,
-    E23_Winver_Unknown = 23, E24_Symbols_Delete = 24, E25_Exploit_Write = 25,
-    E26_Exploit_Open = 26, E27_SmartScreen_Write = 27, E28_SmartScreen_Open = 28,
-    E29_Gamebar_Write = 29, E30_Gamebar_Open = 30, E31_FastBoot_Write = 31,     E32_FastBoot_Open = 32,
-    E33_Defender_Tamper = 33,
-    E34_AV_Tamper = 34,
+    E20_Chrome_RegWrite = 20, E21_Chrome_RegCreate = 21,
+    E22_Winver_Read = 22, E23_Winver_Unknown = 23, E24_Symbols_Delete = 24,
+    E25_Exploit_Write = 25, E26_Exploit_Open = 26,
+    E27_SmartScreen_Write = 27, E28_SmartScreen_Open = 28,
+    E29_Gamebar_Write = 29, E30_Gamebar_Open = 30,
+    E31_FastBoot_Write = 31, E32_FastBoot_Open = 32,
+    E33_Defender_Tamper = 33, E34_AV_Tamper = 34,
     E35_UAC_RegOpen = 35, E36_WU_Service = 36,
 };
 
 struct CLIConfig {
     bool headless = false;
     bool quiet = false;
+    bool autoApply = false;
     std::vector<int> skipChecks;
     std::vector<int> onlyChecks;
     std::string exportPath;
@@ -52,35 +55,58 @@ struct CheckResult {
 namespace Checks {
     bool checkDefenderTamperProtection();
     bool checkAVTamperProtection(const std::string& avName);
-    void checkWindowsDefender(); void check3rdPartyAntiVirus(); void checkCPUV();
-    void checkRiotVanguard(); void checkVCRedist();
-    void uninstallRiotVanguard(); void installVCRedist(); void checkSecureBoot();
-    void isChromeInstalled(); void checkTimeSync(); void syncWindowsTime(); void disableChromeProtection();
-    void checkWinver(); void checkSymbols(); void deleteSymbols(); void checkFastBoot(); void checkExploitProtection();
-    void checkSmartScreen(); void checkGameBar(); void checkModifiedOS(); void checkTPMStatus();
-    void checkCoreIsolation(); void checkDMAProtection();
-    void checkInternet(); void checkNetworkAdapters(); void checkVM(); void checkForUpdate();
+    void checkWindowsDefender();
+    void check3rdPartyAntiVirus();
+    void checkCPUV();
+    void installVCRedist();
+    void checkSecureBoot();
+    void isChromeInstalled();
+    void syncWindowsTime();
+    void disableChromeProtection();
+
+    void checkWinver();
+    void deleteSymbols();
+    void checkFastBoot();
+    void checkExploitProtection();
+    void checkSmartScreen();
+    void checkGameBar();
+    void checkModifiedOS();
+    void checkTPMStatus();
+    void checkCoreIsolation();
+    void checkDMAProtection();
+
+    void checkInternet();
+    void checkNetworkAdapters();
+    void checkVM();
+    void checkForUpdate();
     void checkSecurityMitigations();
     void checkUAC();
     void checkWindowsUpdate();
     void createRestorePoint();
     void backupRegistryKey(const std::string& key, const std::string& label);
+    void uninstallRiotVanguard();
+    void checkRiotVanguard();
+    void checkVCRedist();
+    void checkTimeSync();
+    void checkSymbols();
 }
 namespace Helper {
     extern bool restartRequired;
     extern std::atomic<bool> vcComplete;
     extern int vcCheckSleepTimes;
-    extern int g_phase;
-    extern std::vector<std::string> pendingChanges;
-    extern bool titleLoopBool;
+    extern bool applyChanges;
+
     extern std::mutex consoleMutex;
     extern std::mutex logMutex;
     extern std::ofstream logFile;
     extern bool logEnabled;
     extern std::string g_logPath;
     extern CLIConfig cliConfig;
+
     extern std::vector<CheckResult> g_results;
     extern std::mutex g_resultsMutex;
+    extern std::vector<std::string> g_pendingChanges;
+    extern std::mutex g_pendingChangesMutex;
     extern std::string g_repoUrl;
     extern std::string g_appName;
     extern std::string g_appVersion;
@@ -91,24 +117,37 @@ namespace Helper {
     void printError(const std::string& message);
     void runSystemCommand(const char* command);
     std::string runSystemCommandWithOutput(const char* command, DWORD timeoutMs);
-    void titleLoop();
     bool readDwordValueRegistry(HKEY hKeyParent, LPCSTR subkey, LPCSTR valueName, DWORD* readData);
     ServiceStatus getServiceStatus(LPCSTR serviceName);
+
     bool isAdmin();
-    void initLogging(); void closeLogging(); void logWrite(const std::string& message);
-    CLIConfig parseCLI(int argc, char* argv[]); void showHelp();
+    void initLogging();
+    void closeLogging();
+    void logWrite(const std::string& message);
+    CLIConfig parseCLI(int argc, char* argv[]);
+    void showHelp();
     bool isCheckSkipped(int checkId);
+    bool requestChange(const std::string& change);
+    void clearPendingChanges();
+    bool hasPendingChanges();
+    void printPendingChanges();
+    bool promptApplyChanges();
+
     void recordResult(const std::string& check, const std::string& status, const std::string& message);
+    void clearResults();
     void exportResultsJSON();
     std::string escapeJSON(const std::string& s);
     std::string getTimestampISO();
     std::string fetchURL(const std::wstring& url);
-    void applyPendingChanges();
 }
 namespace Color {
     void setBackgroundColor(const RGBColor& aColor);
     void setForegroundColor(const RGBColor& aColor);
-    inline RGBColor Red = { 255, 0, 0 }; inline RGBColor Green = { 0, 255, 0 };
-    inline RGBColor Yellow = { 255, 255, 0 }; inline RGBColor Cyan = { 0, 255, 255 };
-    inline RGBColor LightGray = { 211, 211, 211 }; inline RGBColor White = { 255, 255, 255 };
+
+    inline RGBColor Red = { 255, 0, 0 };
+    inline RGBColor Green = { 0, 255, 0 };
+    inline RGBColor Yellow = { 255, 255, 0 };
+    inline RGBColor Cyan = { 0, 255, 255 };
+    inline RGBColor LightGray = { 211, 211, 211 };
+    inline RGBColor White = { 255, 255, 255 };
 }
