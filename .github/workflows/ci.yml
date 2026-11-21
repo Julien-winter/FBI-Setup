@@ -32,11 +32,15 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: FBI-Setup-x64
-        path: Build\x64\FBI Setup.exe
+        path: |
+          Build\x64\FBI Setup.exe
+          Build\x64\FBI Setup.pdb
 
     - name: Upload x86
       if: matrix.platform == 'x86'
       uses: actions/upload-artifact@v4
       with:
         name: FBI-Setup-x86
-        path: Build\x86\FBI Setup.exe
+        path: |
+          Build\x86\FBI Setup.exe
+          Build\x86\FBI Setup.pdb

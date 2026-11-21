@@ -9,13 +9,17 @@ struct RGBColor
 };
 enum ServiceStatus
 {
-    STATUS_SERVICE_STOPPED,
-    STATUS_SERVICE_START_PENDING,
-    STATUS_SERVICE_STOP_PENDING,
-    STATUS_SERVICE_RUNNING,
-    STATUS_SERVICE_CONTINUE_PENDING,
-    STATUS_SERVICE_PAUSE_PENDING,
-    STATUS_SERVICE_PAUSED
+    // v1.2.2 bugfix: explicit winnt.h values - getServiceStatus() casts the raw
+    // SERVICE_* state (STOPPED=1 ... PAUSED=7) directly into this enum, so the
+    // implicit 0-based values made EVERY comparison off by one
+    // (a running service never equalled STATUS_SERVICE_RUNNING).
+    STATUS_SERVICE_STOPPED = 1,
+    STATUS_SERVICE_START_PENDING = 2,
+    STATUS_SERVICE_STOP_PENDING = 3,
+    STATUS_SERVICE_RUNNING = 4,
+    STATUS_SERVICE_CONTINUE_PENDING = 5,
+    STATUS_SERVICE_PAUSE_PENDING = 6,
+    STATUS_SERVICE_PAUSED = 7
 };
 
 enum class ErrorCode {
@@ -101,6 +105,10 @@ namespace Checks {
     void checkSecurityMitigations();
     void checkUAC();
     void checkWindowsUpdate();
+
+    void checkCPUVirtualization();
+    void checkSpoofer();
+    void checkActivation();
 }
 namespace Helper {
     extern bool restartRequired;
@@ -129,11 +137,18 @@ namespace Helper {
     void printConcern(const std::string& message);
     void printError(const std::string& message);
     void printInfo(const std::string& message);
+    // v1.2.4: adapter line with an orange warning suffix (kick risk on
+    // flagged VPN/virtual adapters), also keeps the warning in --quiet
+    void printAdapterLine(const std::string& message, bool used, const std::string& orangeSuffix);
     void runSystemCommand(const char* command);
+    int runSystemCommandExitCode(const char* command);
     std::string runSystemCommandWithOutput(const char* command, DWORD timeoutMs);
     bool readDwordValueRegistry(HKEY hKeyParent, LPCSTR subkey, LPCSTR valueName, DWORD* readData);
     ServiceStatus getServiceStatus(LPCSTR serviceName);
     void backupRegistryKey(HKEY hKeyParent, const std::string& subkey);
+    // Appends one applied change to %LOCALAPPDATA%\FBI-Setup\applied-changes.log;
+    // Undo-FBI-Setup.ps1 reads it to revert exactly what this run changed
+    void logAppliedChange(const std::string& change);
 
     bool isAdmin();
     void initLogging();
@@ -164,5 +179,8 @@ namespace Color {
     inline RGBColor Yellow = { 255, 255, 0 };
     inline RGBColor Cyan = { 0, 255, 255 };
     inline RGBColor LightGray = { 211, 211, 211 };
+    inline RGBColor DarkGray = { 128, 128, 128 };
     inline RGBColor White = { 255, 255, 255 };
+    // v1.2.4: kick-risk warnings on flagged network adapters
+    inline RGBColor Orange = { 255, 165, 0 };
 }

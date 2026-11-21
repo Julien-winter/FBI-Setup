@@ -12,6 +12,26 @@ int main(int argc, char* argv[])
         return 0;
     }
 
+    // v1.2.3 bugfix: a second instance writing into the SAME console interleaved
+    // its output with the already running one - identical check lines appeared
+    // back to back (e.g. "- Fast-Boot is disabled" twice). One instance per
+    // session now: the second start gets a short notice and exits instead of
+    // mixing its lines into the running check.
+    HANDLE hSingleInstance = CreateMutexA(NULL, TRUE, "Local\\FBI-Setup-Running");
+    if (hSingleInstance != NULL && GetLastError() == ERROR_ALREADY_EXISTS) {
+        Color::setForegroundColor(Color::Yellow);
+        std::cout << "[-] FBI-Setup is already running - a second window would only mix up the output.\n";
+        std::cout << "    Close the other window first, then start it again.\n";
+        Color::setForegroundColor(Color::LightGray);
+        if (!Helper::cliConfig.headless) {
+            std::cout << "\nPress any key to exit...";
+            std::cin.get();
+        }
+        return 1;
+    }
+    // hSingleInstance is intentionally kept open for the whole process lifetime
+    // (released by the OS on exit) - closing it would reopen the race
+
     if (!Helper::isAdmin()) {
         Color::setForegroundColor(Color::Red);
         std::cout << "[!] This program requires administrator privileges.\n";
@@ -43,26 +63,26 @@ int main(int argc, char* argv[])
     if (!Helper::isCheckSkipped(1)) {
         parallelChecks.emplace_back([]() { Checks::checkWindowsDefender(); });
     }
-    else { Helper::printConcern("- Skipped: Windows Defender"); Helper::recordResult("Windows Defender", "SKIPPED", ""); }
+    else { Helper::recordResult("Windows Defender", "SKIPPED", ""); }
 
     if (!Helper::isCheckSkipped(2)) {
         parallelChecks.emplace_back([]() { Checks::check3rdPartyAntiVirus(); });
     }
-    else { Helper::printConcern("- Skipped: 3rd Party AV"); Helper::recordResult("3rd Party AV", "SKIPPED", ""); }
+    else { Helper::recordResult("3rd Party AV", "SKIPPED", ""); }
 
     if (!Helper::isCheckSkipped(6)) {
         parallelChecks.emplace_back([]() { Checks::isChromeInstalled(); });
     }
-    else { Helper::printConcern("- Skipped: Chrome Install"); Helper::recordResult("Google Chrome", "SKIPPED", ""); }
+    else { Helper::recordResult("Google Chrome", "SKIPPED", ""); }
 
     for (auto& t : parallelChecks) t.join();
     parallelChecks.clear();
 
     if (!Helper::isCheckSkipped(3)) Checks::checkSecureBoot();
-    else { Helper::printConcern("- Skipped: Secure Boot"); Helper::recordResult("Secure Boot", "SKIPPED", ""); }
+    else { Helper::recordResult("Secure Boot", "SKIPPED", ""); }
 
     if (!Helper::isCheckSkipped(4)) Checks::uninstallRiotVanguard();
-    else { Helper::printConcern("- Skipped: Riot Vanguard"); Helper::recordResult("Riot Vanguard", "SKIPPED", ""); }
+    else { Helper::recordResult("Riot Vanguard", "SKIPPED", ""); }
 
     if (!Helper::isCheckSkipped(5)) {
         std::thread vcThread(Checks::installVCRedist);
@@ -74,15 +94,20 @@ int main(int argc, char* argv[])
                 break;
             }
         }
-        vcThread.detach();
+        // v1.2.2 bugfix: join instead of detach while the result is fresh - a
+        // detached thread could still record/push into g_results while the
+        // summary counts and the JSON export iterate it (data race).
+        // Only reached when vcComplete was set (all recordResult calls done).
+        if (Helper::vcComplete) vcThread.join();
+        else vcThread.detach();   // pathological hang: old behaviour, counters are mutex-protected now
     }
-    else { Helper::printConcern("- Skipped: VCRedist"); Helper::recordResult("VC Redist", "SKIPPED", ""); }
+    else { Helper::recordResult("VC Redist", "SKIPPED", ""); }
 
     if (!Helper::isCheckSkipped(7)) Checks::disableChromeProtection();
-    else { Helper::printConcern("- Skipped: Chrome Protection"); Helper::recordResult("Chrome Protection", "SKIPPED", ""); }
+    else { Helper::recordResult("Chrome Protection", "SKIPPED", ""); }
 
     if (!Helper::isCheckSkipped(8)) Checks::syncWindowsTime();
-    else { Helper::printConcern("- Skipped: Time Sync"); Helper::recordResult("Time Sync", "SKIPPED", ""); }
+    else { Helper::recordResult("Time Sync", "SKIPPED", ""); }
 
     Color::setForegroundColor(Color::LightGray);
     std::cout << "-----------------------------------------------------------------\n";
@@ -92,61 +117,81 @@ int main(int argc, char* argv[])
     std::cout << "-----------------------------------------------------------------\n";
 
     if (!Helper::isCheckSkipped(9)) Checks::checkWinver();
-    else { Helper::printConcern("- Skipped: Winver"); Helper::recordResult("Winver", "SKIPPED", ""); }
+    else { Helper::recordResult("Winver", "SKIPPED", ""); }
 
     if (!Helper::isCheckSkipped(10)) Checks::deleteSymbols();
-    else { Helper::printConcern("- Skipped: Symbols"); Helper::recordResult("Symbols", "SKIPPED", ""); }
+    else { Helper::recordResult("Symbols", "SKIPPED", ""); }
 
     if (!Helper::isCheckSkipped(11)) Checks::checkFastBoot();
-    else { Helper::printConcern("- Skipped: Fast Boot"); Helper::recordResult("Fast Boot", "SKIPPED", ""); }
+    else { Helper::recordResult("Fast Boot", "SKIPPED", ""); }
 
     if (!Helper::isCheckSkipped(12)) Checks::checkExploitProtection();
-    else { Helper::printConcern("- Skipped: Exploit Protection"); Helper::recordResult("Exploit Protection", "SKIPPED", ""); }
+    else { Helper::recordResult("Exploit Protection", "SKIPPED", ""); }
 
     if (!Helper::isCheckSkipped(13)) Checks::checkSmartScreen();
-    else { Helper::printConcern("- Skipped: SmartScreen"); Helper::recordResult("SmartScreen", "SKIPPED", ""); }
+    else { Helper::recordResult("SmartScreen", "SKIPPED", ""); }
 
     if (!Helper::isCheckSkipped(14)) Checks::checkGameBar();
-    else { Helper::printConcern("- Skipped: Game Bar"); Helper::recordResult("Game Bar", "SKIPPED", ""); }
+    else { Helper::recordResult("Game Bar", "SKIPPED", ""); }
 
     if (!Helper::isCheckSkipped(15)) Checks::checkTPMStatus();
-    else { Helper::printConcern("- Skipped: TPM"); Helper::recordResult("TPM", "SKIPPED", ""); }
+    else { Helper::recordResult("TPM", "SKIPPED", ""); }
 
     if (!Helper::isCheckSkipped(16)) Checks::checkCoreIsolation();
-    else { Helper::printConcern("- Skipped: Core Isolation"); Helper::recordResult("Core Isolation", "SKIPPED", ""); }
+    else { Helper::recordResult("Core Isolation", "SKIPPED", ""); }
 
     if (!Helper::isCheckSkipped(17)) Checks::checkDMAProtection();
-    else { Helper::printConcern("- Skipped: DMA Protection"); Helper::recordResult("DMA Protection", "SKIPPED", ""); }
+    else { Helper::recordResult("DMA Protection", "SKIPPED", ""); }
 
     if (!Helper::isCheckSkipped(18)) Checks::checkModifiedOS();
-    else { Helper::printConcern("- Skipped: Modified OS"); Helper::recordResult("Modified OS", "SKIPPED", ""); }
+    else { Helper::recordResult("Modified OS", "SKIPPED", ""); }
 
+    Color::setForegroundColor(Color::LightGray);
+    std::cout << "-----------------------------------------------------------------\n";
+    Color::setForegroundColor(Color::Cyan);
+    std::cout << "Network, update and hardening checks\n";
     Color::setForegroundColor(Color::LightGray);
     std::cout << "-----------------------------------------------------------------\n";
 
     if (!Helper::isCheckSkipped(19)) Checks::checkInternet();
-    else { Helper::printConcern("- Skipped: Internet"); Helper::recordResult("Internet", "SKIPPED", ""); }
+    else { Helper::recordResult("Internet", "SKIPPED", ""); }
 
     if (!Helper::isCheckSkipped(20)) Checks::checkNetworkAdapters();
-    else { Helper::printConcern("- Skipped: Network Adapters"); Helper::recordResult("Network Adapters", "SKIPPED", ""); }
+    else { Helper::recordResult("Network Adapters", "SKIPPED", ""); }
 
     if (!Helper::isCheckSkipped(21)) Checks::checkVM();
-    else { Helper::printConcern("- Skipped: VM Detection"); Helper::recordResult("VM Detection", "SKIPPED", ""); }
+    else { Helper::recordResult("VM Detection", "SKIPPED", ""); }
 
     if (!Helper::isCheckSkipped(22)) Checks::checkForUpdate();
-    else { Helper::printConcern("- Skipped: Auto-Update"); Helper::recordResult("Auto-Update", "SKIPPED", ""); }
+    else { Helper::recordResult("Auto-Update", "SKIPPED", ""); }
 
     if (!Helper::isCheckSkipped(23)) Checks::checkSecurityMitigations();
-    else { Helper::printConcern("- Skipped: Security Mitigations"); Helper::recordResult("Security Mitigations", "SKIPPED", ""); }
+    else { Helper::recordResult("Security Mitigations", "SKIPPED", ""); }
 
     if (!Helper::isCheckSkipped(24)) Checks::checkUAC();
-    else { Helper::printConcern("- Skipped: UAC"); Helper::recordResult("UAC", "SKIPPED", ""); }
+    else { Helper::recordResult("UAC", "SKIPPED", ""); }
 
     if (!Helper::isCheckSkipped(25)) Checks::checkWindowsUpdate();
-    else { Helper::printConcern("- Skipped: Windows Update"); Helper::recordResult("Windows Update", "SKIPPED", ""); }
+    else { Helper::recordResult("Windows Update", "SKIPPED", ""); }
 
-    // Count warnings and failures
-    for (const auto& r : Helper::g_results) {
+    if (!Helper::isCheckSkipped(26)) Checks::checkCPUVirtualization();
+    else { Helper::recordResult("CPU-V", "SKIPPED", ""); }
+
+    if (!Helper::isCheckSkipped(27)) Checks::checkSpoofer();
+    else { Helper::recordResult("HWID Spoofer", "SKIPPED", ""); }
+
+    // v1.2.2: read-only - never re-run in the apply phase (no requestChange)
+    if (!Helper::isCheckSkipped(28)) Checks::checkActivation();
+    else { Helper::recordResult("Activation", "SKIPPED", ""); }
+
+    // Count warnings and failures (v1.2.2: under the results mutex - the VCRedist
+    // thread may still be finishing, and recordResult is called from threads)
+    decltype(Helper::g_results) resultsSnapshot;
+    {
+        std::lock_guard<std::mutex> lock(Helper::g_resultsMutex);
+        resultsSnapshot = Helper::g_results;
+    }
+    for (const auto& r : resultsSnapshot) {
         if (r.status == "WARN") warningCount++;
         if (r.status == "FAIL") failedCount++;
     }
@@ -162,19 +207,29 @@ int main(int argc, char* argv[])
         if (approved) {
             Helper::applyChanges = true;
             Helper::clearPendingChanges();
-            Helper::clearResults();
+            // v1.2.2: do NOT clear results here - recordResult upserts per check, so the
+            // final summary keeps every check from both phases (all checks, not just the
+            // 18 re-run ones)
             Helper::vcComplete = false;
             Helper::vcCheckSleepTimes = 0;
 
+            Helper::logWrite("=== phase 2: applying approved changes ===");
             Color::setForegroundColor(Color::Cyan);
             std::cout << "\nApplying approved changes...\n";
             Color::setForegroundColor(Color::LightGray);
             std::cout << "-----------------------------------------------------------------\n";
 
+            // v1.2.3: NO system restore point anymore - it was invisible in
+            // System Restore on the target machines and duplicated what
+            // Undo-FBI-Setup.ps1 already does via the %TEMP%\FBI-Setup\Backup
+            // exports + applied-changes.log markers (every registry write is
+            // exported before it happens)
+
             if (!Helper::isCheckSkipped(1)) Checks::checkWindowsDefender();
             if (!Helper::isCheckSkipped(2)) Checks::check3rdPartyAntiVirus();
             if (!Helper::isCheckSkipped(4)) Checks::uninstallRiotVanguard();
             if (!Helper::isCheckSkipped(5)) Checks::installVCRedist();
+            if (!Helper::isCheckSkipped(6)) Checks::isChromeInstalled();
             if (!Helper::isCheckSkipped(7)) Checks::disableChromeProtection();
             if (!Helper::isCheckSkipped(8)) Checks::syncWindowsTime();
             if (!Helper::isCheckSkipped(10)) Checks::deleteSymbols();
@@ -184,14 +239,20 @@ int main(int argc, char* argv[])
             if (!Helper::isCheckSkipped(14)) Checks::checkGameBar();
             if (!Helper::isCheckSkipped(16)) Checks::checkCoreIsolation();
             if (!Helper::isCheckSkipped(19)) Checks::checkInternet();
+            // v1.2.1: adapter removal runs through requestChange - without the
+            // apply re-run the approved pnputil removal never executed
+            if (!Helper::isCheckSkipped(20)) Checks::checkNetworkAdapters();
             if (!Helper::isCheckSkipped(23)) Checks::checkSecurityMitigations();
 
-            // Re-count after applying changes
+            // Re-count after applying changes (v1.2.2: under the results mutex)
             warningCount = 0;
             failedCount = 0;
-            for (const auto& r : Helper::g_results) {
-                if (r.status == "WARN") warningCount++;
-                if (r.status == "FAIL") failedCount++;
+            {
+                std::lock_guard<std::mutex> lock(Helper::g_resultsMutex);
+                for (const auto& r : Helper::g_results) {
+                    if (r.status == "WARN") warningCount++;
+                    if (r.status == "FAIL") failedCount++;
+                }
             }
         }
         else {
@@ -210,10 +271,34 @@ int main(int argc, char* argv[])
         std::cout << "\n(Restart required to apply all changes)";
     }
 
-    // Count all result types
+    // v1.2.2: one snapshot under the mutex, reused for counts AND the named list
+    decltype(Helper::g_results) finalResults;
+    {
+        std::lock_guard<std::mutex> lock(Helper::g_resultsMutex);
+        finalResults = Helper::g_results;
+    }
     int passedCount = 0;
-    for (const auto& r : Helper::g_results) {
+    int skippedCount = 0;
+    for (const auto& r : finalResults) {
         if (r.status == "OK") passedCount++;
+        else if (r.status == "SKIPPED") skippedCount++;
+    }
+
+    // v1.2.2: name the remaining problems - the top of the console has usually
+    // scrolled away by now, and this screenshot is what support gets to see
+    std::vector<const CheckResult*> problems;
+    for (const auto& r : finalResults) {
+        if (r.status == "FAIL" || r.status == "WARN") problems.push_back(&r);
+    }
+    if (!problems.empty()) {
+        Color::setForegroundColor(Color::LightGray);
+        std::cout << "\nRemaining issues:\n";
+        for (const auto* r : problems) {
+            Color::setForegroundColor(r->status == "FAIL" ? Color::Red : Color::Yellow);
+            std::cout << (r->status == "FAIL" ? "[X] " : "[-] ") << r->check;
+            if (!r->message.empty()) std::cout << ": " << r->message;
+            std::cout << "\n";
+        }
     }
 
     Color::setForegroundColor(Color::LightGray);
@@ -228,7 +313,15 @@ int main(int argc, char* argv[])
         Color::setForegroundColor(Color::Red);
         std::cout << "  [X] " << failedCount << " error" << (failedCount != 1 ? "s" : "");
     }
+    if (skippedCount > 0) {
+        Color::setForegroundColor(Color::DarkGray);
+        std::cout << "  ~ " << skippedCount << " skipped";
+    }
     std::cout << "\n";
+    if (!Helper::g_logPath.empty()) {
+        Color::setForegroundColor(Color::DarkGray);
+        std::cout << "Log: " << Helper::g_logPath << "\n";
+    }
 
     std::cout << "\n";
     SetConsoleTitleA("Checking completed!");
@@ -244,6 +337,11 @@ int main(int argc, char* argv[])
         std::cin.get();
     }
 
-    Helper::g_exitCode = (failedCount > 0) ? 1 : (warningCount > 0 ? 2 : 0);
+    // v1.2.2: exit 3 = nothing was actually checked (e.g. --only 99 / all skipped)
+    // - exit 0 with "0 passed" used to masquerade as a clean run
+    if (failedCount > 0) Helper::g_exitCode = 1;
+    else if (warningCount > 0) Helper::g_exitCode = 2;
+    else if (passedCount == 0 && skippedCount > 0) Helper::g_exitCode = 3;
+    else Helper::g_exitCode = 0;
     return Helper::g_exitCode;
 }
