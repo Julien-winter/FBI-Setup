@@ -2454,6 +2454,56 @@ void Checks::checkSecureBoot()
     DWORD secbootStatus = 0;
     bool stateRead = Helper::readDwordValueRegistry(HKEY_LOCAL_MACHINE,
         "SYSTEM\\CurrentControlSet\\Control\\SecureBoot\\State", "UEFISecureBootEnabled", &secbootStatus);
+    const char* stateSource = "registry";
+
+    // v1.2.1 fix: the State key is missing on some machines (Windows originally
+    // installed in legacy mode, later switched to UEFI, OEM images) - the registry
+    // miss must not end the check, read the SecureBoot UEFI variable directly
+    if (!stateRead && firmwareType == 2) {
+        HANDLE hToken = NULL;
+        if (OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &hToken)) {
+            TOKEN_PRIVILEGES tp = {};
+            if (LookupPrivilegeValueA(NULL, SE_SYSTEM_ENVIRONMENT_NAME, &tp.Privileges[0].Luid)) {
+                tp.PrivilegeCount = 1;
+                tp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
+                AdjustTokenPrivileges(hToken, FALSE, &tp, sizeof(tp), NULL, NULL);
+            }
+            CloseHandle(hToken);
+        }
+        // EFI_GLOBAL_VARIABLE: the SecureBoot variable is one byte, 1 = enabled
+        // (the W-API takes the vendor GUID as a string, not as a GUID struct)
+        unsigned char sbVar[4] = {};
+        DWORD sbLen = GetFirmwareEnvironmentVariableW(L"SecureBoot",
+            L"{8BE4DF61-93CA-11d2-AA0D-00E098032B8C}", sbVar, sizeof(sbVar));
+        if (sbLen == 1) {
+            secbootStatus = sbVar[0] ? 1 : 0;
+            stateRead = true;
+            stateSource = "firmware variable";
+        }
+        else {
+            DWORD err = GetLastError();
+            // no SecureBoot variable at all -> the firmware cannot enable it;
+            // any OTHER error keeps the chain going (PowerShell fallback below)
+            if (err == ERROR_ENVVAR_NOT_FOUND || err == ERROR_INVALID_FUNCTION) {
+                Helper::printSuccess("- Secure-Boot is not available (firmware reports no Secure-Boot)", false);
+                Helper::recordResult("Secure Boot", "OK", "Not supported by firmware");
+                return;
+            }
+        }
+    }
+
+    // last resort: the PowerShell cmdlet reads the state via a different path
+    if (!stateRead && firmwareType == 2) {
+        std::string sbOut = Helper::runSystemCommandWithOutput(
+            "powershell -NoProfile -Command \"Confirm-SecureBootUEFI\"", 20000);
+        if (sbOut == "TIMEOUT") sbOut.clear();
+        if (sbOut.find("True") != std::string::npos) {
+            secbootStatus = 1; stateRead = true; stateSource = "Confirm-SecureBootUEFI";
+        }
+        else if (sbOut.find("False") != std::string::npos) {
+            secbootStatus = 0; stateRead = true; stateSource = "Confirm-SecureBootUEFI";
+        }
+    }
 
     if (!stateRead) {
         if (firmwareType == 2) {
@@ -2466,6 +2516,7 @@ void Checks::checkSecureBoot()
         }
         return;
     }
+    Helper::logWrite("  [i] Secure Boot state source: " + std::string(stateSource));
 
     if (secbootStatus == 0x00000000) {
         Helper::printSuccess("- Secure-Boot is disabled (UEFI)", false);
@@ -2713,7 +2764,9 @@ void Checks::checkWinver()
         {26300, "Win11 26H2"}, {28000, "Win11 26H1"},
     };
     int min_build = 19041;
-    std::vector<int> trouble = {19045, 22621};
+    // v1.2.1: 22H2 (19045/22621) is supported, not a 50/50 (user decision) -
+    // everything from 25H2 (26200) on is 50/50, 26H2 (26300) is not supported
+    std::vector<int> trouble = {};
 
     // 25H2 and every build we do not know yet are 50/50: works for some users, breaks for others
     const int fiftyFiftyFrom = 26200;
@@ -3593,8 +3646,61 @@ void Checks::checkSpoofer()
     }
 }
 
-// v1.2.2: read-only activation status - reports the state, never activates or
-// modifies anything (no key installation, no watermark tampering)
+namespace {
+    // v1.2.1: small helper for the watermark hide - writes one REG_DWORD,
+    // creating the key when needed; returns the Reg* result code
+    LONG writeDwordValue(HKEY parent, const char* subkey, const char* valueName, DWORD value)
+    {
+        HKEY hKey = NULL; DWORD disp = 0;
+        LONG rc = RegCreateKeyEx(parent, subkey, 0, NULL, REG_OPTION_NON_VOLATILE,
+            KEY_READ | KEY_WRITE, NULL, &hKey, &disp);
+        if (rc != ERROR_SUCCESS) return rc;
+        rc = RegSetValueEx(hKey, valueName, NULL, REG_DWORD,
+            (const BYTE*)&value, sizeof(value));
+        RegCloseKey(hKey);
+        return rc;
+    }
+
+    // v1.2.1: hide the visible activation watermark (COSMETIC ONLY - this does
+    // NOT activate Windows, no key is installed, the license state is never
+    // touched). Both keys are exported before the write so Undo-FBI-Setup.ps1
+    // can restore them. Returns true when the change was applied; when it is
+    // only pending approval or the write failed the result is recorded here.
+    bool offerActivationWatermarkHide(const std::string& stateMsg)
+    {
+        if (!Helper::requestChange("Hide the activation watermark (cosmetic - does not activate Windows)")) {
+            Helper::recordResult("Activation", "WARN", stateMsg + " - watermark hide pending approval");
+            return false;
+        }
+
+        const char* actKey =
+            "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\SoftwareProtectionPlatform\\Activation";
+        Helper::backupRegistryKey(HKEY_LOCAL_MACHINE, actKey);
+        Helper::backupRegistryKey(HKEY_CURRENT_USER, "Control Panel\\Desktop");
+
+        // NotificationDisabled=1 stops the notification-mode watermark, and
+        // PaintDesktopVersion=0 hides the desktop watermark layer - both need
+        // a restart to take effect (restartRequired is set below)
+        LONG rc1 = writeDwordValue(HKEY_LOCAL_MACHINE, actKey, "NotificationDisabled", 1);
+        LONG rc2 = writeDwordValue(HKEY_CURRENT_USER, "Control Panel\\Desktop",
+            "PaintDesktopVersion", 0);
+        if (rc1 == ERROR_SUCCESS && rc2 == ERROR_SUCCESS) {
+            Helper::logAppliedChange("reg:" + std::string(actKey));
+            Helper::logAppliedChange("reg:Control Panel\\Desktop");
+            Helper::restartRequired = true;
+            Helper::printSuccess("- Activation watermark hidden (restart required to apply)", true);
+            Helper::recordResult("Activation", "OK", stateMsg + " - watermark hidden (cosmetic)");
+            return true;
+        }
+        Helper::printError("- Failed to hide the activation watermark");
+        Helper::recordResult("Activation", "FAIL", stateMsg + " - watermark hide failed");
+        return false;
+    }
+}
+
+// v1.2.2: reports the state, never activates anything (no key installation).
+// v1.2.1: the license state itself stays untouched, but the VISIBLE watermark
+// can now be hidden on approval - cosmetic only, restart required
 void Checks::checkActivation()
 {
     SetConsoleTitleA("Checking Activation Status");
@@ -3644,25 +3750,24 @@ void Checks::checkActivation()
     case 0:
         Helper::printConcern("- Windows is not activated - activate with a valid license key "
             "(Settings > System > Activation)");
-        Helper::recordResult("Activation", "WARN",
-            "Not activated - activate with a valid license key");
+        offerActivationWatermarkHide("Not activated");
         break;
     case 4:
         Helper::printConcern("- Windows reports a non-genuine grace period");
-        Helper::recordResult("Activation", "WARN", "Non-genuine grace period");
+        offerActivationWatermarkHide("Non-genuine grace period");
         break;
     case 5:
         Helper::printConcern("- Windows is in notification mode - the activation watermark "
             "can be visible until a valid license key is entered");
-        Helper::recordResult("Activation", "WARN",
-            "Notification mode - activation watermark can be visible");
+        offerActivationWatermarkHide("Notification mode");
         break;
     case 6:
         Helper::printConcern("- Windows is in extended grace period");
-        Helper::recordResult("Activation", "WARN", "Extended grace period");
+        offerActivationWatermarkHide("Extended grace period");
         break;
     default:
         Helper::printConcern("- Unknown activation state (LicenseStatus=" + token + ")");
+        // unknown state - no watermark verdict, keep it read-only
         Helper::recordResult("Activation", "WARN", "Unknown LicenseStatus " + token);
         break;
     }

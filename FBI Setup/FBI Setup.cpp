@@ -180,7 +180,8 @@ int main(int argc, char* argv[])
     if (!Helper::isCheckSkipped(27)) Checks::checkSpoofer();
     else { Helper::recordResult("HWID Spoofer", "SKIPPED", ""); }
 
-    // v1.2.2: read-only - never re-run in the apply phase (no requestChange)
+    // v1.2.1: no longer purely read-only - the watermark hide runs through
+    // requestChange, so the check IS re-run in the apply phase (like the others)
     if (!Helper::isCheckSkipped(28)) Checks::checkActivation();
     else { Helper::recordResult("Activation", "SKIPPED", ""); }
 
@@ -243,6 +244,9 @@ int main(int argc, char* argv[])
             // apply re-run the approved pnputil removal never executed
             if (!Helper::isCheckSkipped(20)) Checks::checkNetworkAdapters();
             if (!Helper::isCheckSkipped(23)) Checks::checkSecurityMitigations();
+            // v1.2.1: the watermark hide is a pending change now - re-run so the
+            // approved NotificationDisabled/PaintDesktopVersion write executes
+            if (!Helper::isCheckSkipped(28)) Checks::checkActivation();
 
             // Re-count after applying changes (v1.2.2: under the results mutex)
             warningCount = 0;

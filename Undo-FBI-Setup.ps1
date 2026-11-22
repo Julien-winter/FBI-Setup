@@ -114,6 +114,17 @@ $regWrites = [ordered]@{
     'SOFTWARE\Microsoft\Windows\CurrentVersion\GameDVR' = @(
         @{ Sub = ''; Name = 'AppCaptureEnabled' }
     )
+    'SOFTWARE\Microsoft\Windows NT\CurrentVersion\SoftwareProtectionPlatform\Activation' = @(
+        @{ Sub = ''; Name = 'NotificationDisabled' }
+    )
+}
+
+# v1.2.1: HKCU writes (the watermark hide touches the desktop key) - same
+# shape as $regWrites; a key is looked up in exactly ONE of the two tables
+$regWritesHKCU = [ordered]@{
+    'Control Panel\Desktop' = @(
+        @{ Sub = ''; Name = 'PaintDesktopVersion' }
+    )
 }
 
 # Remove tool-written values that the backup does not contain.
@@ -124,15 +135,28 @@ $regWrites = [ordered]@{
 function Remove-ToolValues {
     param([string]$Key, [string]$BackupText)
 
-    if (-not $regWrites.Contains($Key)) { return }
-    foreach ($entry in $regWrites[$Key]) {
-        $path = "HKLM:\$Key$($entry.Sub)"
+    # v1.2.1: hive-aware - HKCU keys are handled via $regWritesHKCU, the
+    # section name in the .reg backup must use the matching root as well
+    $isHkcu = $regWritesHKCU.Contains($Key)
+    if ($isHkcu) {
+        $writes = $regWritesHKCU[$Key]
+        $hivePath = "HKCU:\$Key"
+        $rootName = 'HKEY_CURRENT_USER'
+    }
+    else {
+        if (-not $regWrites.Contains($Key)) { return }
+        $writes = $regWrites[$Key]
+        $hivePath = "HKLM:\$Key"
+        $rootName = 'HKEY_LOCAL_MACHINE'
+    }
+    foreach ($entry in $writes) {
+        $path = "$hivePath$($entry.Sub)"
         $existing = Get-ItemProperty -Path $path -Name $entry.Name -ErrorAction SilentlyContinue
         if ($null -eq $existing) { continue }   # value not set - nothing to do
 
         $inBackup = $false
         if ($BackupText) {
-            $sectionName = "HKEY_LOCAL_MACHINE\$Key$($entry.Sub)"
+            $sectionName = "$rootName\$Key$($entry.Sub)"
             # .reg export: [HKEY_LOCAL_MACHINE\...] sections, optional quotes,
             # values until the next section header
             $pattern = '(?ims)^\["?]?' + [regex]::Escape($sectionName) + '["?]?\](.*?)(?=^\["?]?\[?HKEY_|\z)'
